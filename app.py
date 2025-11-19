@@ -441,9 +441,22 @@ def on_chunk_docs_select(domain_id, doc_id):
 
 
 # ====== Gradio UI Layout ======
+
 with gr.Blocks(theme=gr.themes.Soft()) as demo:
-    gr.Markdown("# 🧠 Multi-Domain Document Intelligence Platform (MVP)")
-    gr.Markdown("**Pipeline:** Upload → Chunk → Embed → Store → Retrieve → Inspect")
+    gr.Markdown(
+        """
+        # 🧠 GenAI Multi-Domain Knowledge Platform
+
+        **Transform your documents into intelligent, searchable knowledge bases**
+
+        🎯 **Multi-Domain Support** • ⚙️ **Config-Driven** • ** 
+        Add new domains (HR, Finance, project related , etc.) with just a YAML file - no code changes needed. 
+        Each domain gets its own vector store, chunking strategy, and retrieval configuration.
+
+        **Pipeline:** Upload → Chunk → Embed → Store → Retrieve → Inspect
+        ---
+        """
+    )
 
     with gr.Tab("1️⃣ Domain Info"):
         gr.Markdown("### Select a domain to view its configuration and uploaded documents")
