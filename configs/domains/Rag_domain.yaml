@@ -1,0 +1,34 @@
+name: Rag
+display_name: 'rag knowledge base '
+description: hello
+vector_store:
+  provider: chromadb
+  chromadb:
+    persist_directory: ./data/chroma_db
+    collection_name: rag_collection
+embeddings:
+  provider: sentence_transformers
+  model_name: all-MiniLM-L6-v2
+  device: cpu
+  batch_size: 32
+  normalize_embeddings: true
+chunking:
+  strategy: recursive
+  recursive:
+    chunk_size: 500
+    overlap: 50
+  semantic:
+    similarity_threshold: 0.7
+    max_chunk_size: 1000
+retrieval:
+  strategy: hybrid
+  alpha: 0.7
+  top_k: 10
+  enable_metadata_filtering: true
+  normalize_scores: true
+security:
+  allowed_file_types:
+  - pdf
+  - docx
+  - txt
+  max_file_size_mb: 50
