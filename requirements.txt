@@ -1,21 +1,55 @@
-chromadb==0.4.18
-sentence-transformers==2.2.2
-huggingface-hub==0.17.3
-transformers==4.32.0
-PyPDF2==3.0.1
-pydantic==2.5.0
-PyYAML==6.0.1
-numpy==1.24.3
-python-dateutil==2.8.2
-pytest==7.4.3
-torch>=1.11.0
-tokenizers==0.13.3
-reportlab
-google-generativeai
-pinecone
-PyMuPDF>=1.23.0        # Best for PDF and DOCX (RECOMMENDED)
-PyPDF2>=3.0.0
-python-docx>=0.8.11
-chromadb>=0.4.0
-gradio>=4.0.0
+# ============================================
+# CORE ML/AI DEPENDENCIES
+# ============================================
+torch>=1.11.0                      # PyTorch (required for transformers)
+transformers==4.32.0               # HuggingFace transformers
+sentence-transformers==2.2.2       # Sentence embeddings
+tokenizers==0.13.3                 # Fast tokenizers
+huggingface-hub==0.17.3           # HuggingFace model hub
 
+# ============================================
+# VECTOR DATABASE & EMBEDDINGS
+# ============================================
+chromadb==0.4.18                   # Vector database
+pinecone-client>=2.2.0            # Pinecone (optional alternative)
+google-generativeai>=0.3.0        # Gemini embeddings (optional)
+
+# ============================================
+# DOCUMENT PROCESSING
+# ============================================
+PyMuPDF>=1.23.0                   # PDF processing (fitz) - BEST
+PyPDF2>=3.0.0                     # PDF fallback
+python-docx>=0.8.11               # DOCX processing
+chardet>=5.0.0                    # Character encoding detection (MISSING)
+
+# ============================================
+# WEB FRAMEWORK
+# ============================================
+gradio>=4.0.0                     # Web UI
+
+# ============================================
+# CONFIGURATION & VALIDATION
+# ============================================
+pydantic==2.5.0                   # Data validation
+PyYAML==6.0.1                     # YAML config files
+
+# ============================================
+# UTILITIES
+# ============================================
+numpy==1.24.3                     # Numerical operations
+python-dateutil==2.8.2           # Date utilities
+reportlab>=4.0.0                  # PDF generation (if needed)
+
+# ============================================
+# DEVELOPMENT & TESTING
+# ============================================
+pytest==7.4.3                     # Testing framework
+
+# ============================================
+# ADDITIONAL MISSING DEPENDENCIES
+# ============================================
+requests>=2.31.0                  # HTTP requests (used by many libraries)
+tqdm>=4.65.0                      # Progress bars (used by transformers)
+filelock>=3.12.0                  # File locking (used by transformers)
+packaging>=23.0                   # Package version parsing
+typing-extensions>=4.5.0          # Type hints backport
