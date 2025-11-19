@@ -135,19 +135,6 @@ class ChromaDBStore(VectorStoreInterface):
             Path to directory for persisting data
         collection_name : str
             Name of the collection to use/create
-
-        Raises:
-        -------
-        ValueError:
-            If collection_name is invalid
-        RuntimeError:
-            If ChromaDB initialization fails
-
-        Notes:
-        ------
-        - First run creates the collection (takes ~1-2 seconds)
-        - Subsequent runs reuse existing collection (instant)
-        - Collection persists between application restarts
         """
         self.persist_directory = persist_directory
         self.collection_name = collection_name
@@ -159,36 +146,40 @@ class ChromaDBStore(VectorStoreInterface):
         )
 
         try:
-            # Initialize ChromaDB client with persistence
-            self.client = chromadb.Client(Settings(
-                persist_directory=persist_directory,
-                anonymized_telemetry=False,  # Disable telemetry for privacy
-                allow_reset=True  # Allow reset in development
-            ))
+            # Create persist directory if it doesn't exist
+            from pathlib import Path
+            persist_path = Path(persist_directory)
+            persist_path.mkdir(parents=True, exist_ok=True)
 
-            # Get or create collection
-            # Using cosine similarity (most common for embeddings)
+            logger.info(f"Persist path: {persist_path.absolute()}")
+
+            # Initialize ChromaDB PersistentClient (0.4.x API)
+            # No Settings needed - just pass the path
+            self.client = chromadb.PersistentClient(path=str(persist_path))
+
+            # Get or create collection with cosine similarity
             self.collection = self.client.get_or_create_collection(
                 name=collection_name,
-                metadata={"hnsw:space": "cosine"}  # Distance metric for HNSW index
+                metadata={"hnsw:space": "cosine"}  # Cosine similarity for embeddings
             )
 
             # Log collection info
             count = self.collection.count()
             logger.info(
-                f"✅ ChromaDB initialized!\n"
-                f"   Collection: {collection_name}\n"
-                f"   Existing vectors: {count:,}\n"
-                f"   Distance metric: cosine"
+                f"✅ ChromaDB initialized successfully!\n"
+                f"  Collection: {collection_name}\n"
+                f"  Existing vectors: {count:,}\n"
+                f"  Distance metric: cosine\n"
+                f"  Persist directory: {persist_path.absolute()}"
             )
 
         except Exception as e:
-            logger.error(f"Failed to initialize ChromaDB: {e}")
+            logger.error(f"Failed to initialize ChromaDB: {e}", exc_info=True)
             raise RuntimeError(
                 f"Could not initialize ChromaDB\n"
                 f"Directory: {persist_directory}\n"
                 f"Collection: {collection_name}\n"
-                f"Error: {e}"
+                f"Error: {str(e)}"
             )
 
     def upsert(self, chunks: List[ChunkMetadata], embeddings: np.ndarray) -> None:

@@ -321,6 +321,7 @@ class DocumentPipeline:
             uploader_id: Optional[str] = None,
             page_num: Optional[int] = None
     ) -> Dict[str, Any]:
+        """Process a single document through the complete pipeline."""
         """
         Process a single document through the complete pipeline.
 
@@ -408,8 +409,8 @@ class DocumentPipeline:
         - File hash is updated
         - Metadata reflects new upload timestamp
         """
-        start_time = time.time()
 
+        start_time = time.time()
         logger.info(
             f"Processing document:\n"
             f"  File: {file_path}\n"
@@ -423,14 +424,12 @@ class DocumentPipeline:
             # STAGE 1: Validate and read file
             # ================================================================
             file_path_obj = Path(file_path)
-
             if not file_path_obj.exists():
                 raise FileNotFoundError(f"File not found: {file_path}")
-
             if not file_path_obj.is_file():
                 raise ValueError(f"Path is not a file: {file_path}")
 
-            # Read file content
+            # Read file content for hash
             logger.debug("Reading file content...")
             with open(file_path, 'rb') as f:
                 file_content = f.read()
@@ -440,29 +439,37 @@ class DocumentPipeline:
             logger.debug(f"File hash: {file_hash}")
 
             # ================================================================
-            # STAGE 2: Extract text from file
+            # STAGE 2: Extract text from file using appropriate processor
             # ================================================================
             logger.debug("Extracting text from file...")
 
-            # For MVP, assume text is directly readable (TXT files)
-            # TODO: Implement file parsers for PDF, DOCX, etc.
-            try:
-                text = file_content.decode('utf-8')
-            except UnicodeDecodeError:
-                # If not UTF-8, try other encodings
-                try:
-                    text = file_content.decode('latin-1')
-                except:
-                    raise ValueError(
-                        f"Unable to decode file: {file_path}\n"
-                        f"Supported: UTF-8, Latin-1 text files\n"
-                        f"TODO: Implement PDF/DOCX parsers"
-                    )
+            # Import file processors
+            from utils.file_parsers.pdf_processor import PDFProcessor
+            from utils.file_parsers.docx_processor import DOCXProcessor
+            from utils.file_parsers.txt_processor import TXTProcessor
 
-            if not text.strip():
-                raise ValueError(f"File is empty or contains no text: {file_path}")
+            # Determine file type and extract text
+            file_ext = file_path_obj.suffix.lower()
 
-            logger.info(f"Extracted {len(text)} characters from file")
+            if file_ext == '.pdf':
+                processor = PDFProcessor()
+                text = processor.extract_text(str(file_path))
+            elif file_ext == '.docx':
+                processor = DOCXProcessor()
+                text = processor.extract_text(str(file_path))
+            elif file_ext == '.txt':
+                processor = TXTProcessor()
+                text = processor.extract_text(str(file_path))
+            else:
+                raise ValueError(
+                    f"Unsupported file format: {file_ext}\n"
+                    f"Supported formats: .pdf, .docx, .txt"
+                )
+
+            if not text or not text.strip():
+                raise ValueError(f"File is empty or contains no extractable text: {file_path}")
+
+            logger.info(f"Extracted {len(text)} characters from {file_ext} file")
 
             # ================================================================
             # STAGE 3: Chunk text
@@ -510,9 +517,7 @@ class DocumentPipeline:
             # STAGE 5: Upsert to vector store
             # ================================================================
             logger.debug("Upserting to vector store...")
-
             self.vector_store.upsert(chunks, embeddings)
-
             logger.info(f"Upserted {len(chunks)} chunks to vector store")
 
             # ================================================================
@@ -527,6 +532,7 @@ class DocumentPipeline:
                 'chunks_created': len(chunks),
                 'processing_time': processing_time,
                 'file_path': str(file_path),
+                'file_size': len(file_content),
                 'file_hash': file_hash,
                 'embedding_model': self.embedder.get_model_name(),
                 'chunking_strategy': self.config.chunking.strategy,
@@ -535,11 +541,11 @@ class DocumentPipeline:
 
             logger.info(
                 f"✅ Document processed successfully!\n"
-                f"   Doc ID: {doc_id}\n"
-                f"   Chunks: {len(chunks)}\n"
-                f"   Time: {processing_time:.2f}s\n"
-                f"   Embedding model: {self.embedder.get_model_name()}\n"
-                f"   Vector store: {self.config.vector_store.provider}"
+                f"  Doc ID: {doc_id}\n"
+                f"  Chunks: {len(chunks)}\n"
+                f"  Time: {processing_time:.2f}s\n"
+                f"  Embedding model: {self.embedder.get_model_name()}\n"
+                f"  Vector store: {self.config.vector_store.provider}"
             )
 
             return result
@@ -547,12 +553,12 @@ class DocumentPipeline:
         except Exception as e:
             # Error handling: Log and return error result
             processing_time = time.time() - start_time
-
             logger.error(
                 f"❌ Document processing failed:\n"
-                f"   Doc ID: {doc_id}\n"
-                f"   Error: {str(e)}\n"
-                f"   Time: {processing_time:.2f}s"
+                f"  Doc ID: {doc_id}\n"
+                f"  Error: {str(e)}\n"
+                f"  Time: {processing_time:.2f}s",
+                exc_info=True
             )
 
             return {
@@ -565,6 +571,7 @@ class DocumentPipeline:
                 'error': str(e),
                 'error_type': type(e).__name__
             }
+
 
     def delete_document(self, doc_id: str) -> Dict[str, Any]:
         """

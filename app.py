@@ -1,913 +1,593 @@
-"""
-app.py - Multi-Domain Document Intelligence Platform
-
-New Features:
--------------
-1. Document listing per domain
-2. Upload confirmation messages
-3. Create new domains
-4. Delete domains
-5. Document management (list, delete)
-6. Better PDF/DOCX extraction
-"""
-
 import gradio as gr
 from pathlib import Path
-import time
+from datetime import datetime
 import logging
 import yaml
-import shutil
-from typing import List, Dict, Any, Optional
-from datetime import datetime
+import os
 
-# Core pipeline
+# Import your core pipeline and config manager modules here
 from core.pipeline.document_pipeline import DocumentPipeline
 from core.config_manager import ConfigManager
-
-# File processors
 from utils.file_parsers.pdf_processor import PDFProcessor
 from utils.file_parsers.docx_processor import DOCXProcessor
 from utils.file_parsers.txt_processor import TXTProcessor
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+logger = logging.getLogger("MultiDomainRAGApp")
 
-
-# =============================================================================
-# Global State Management
-# =============================================================================
 
 class AppState:
-    """Enhanced application state with document tracking."""
-
     def __init__(self):
-        self.config_manager = None
-        self.pipelines: Dict[str, DocumentPipeline] = {}
-        self.available_domains: List[str] = []
-        self.current_domain: Optional[str] = None
-        self.uploaded_documents: Dict[str, List[Dict]] = {}  # Track docs per domain
+        self.config_manager = ConfigManager(config_dir="configs")
 
-        # Initialize
-        self._initialize()
-
-    def _initialize(self):
-        """Initialize config manager and discover domains."""
-        try:
-            # Calculate project root dynamically
-            current_file = Path(__file__).resolve()
-
-            # Try multiple locations
-            if (current_file.parent / "configs").exists():
-                project_root = current_file.parent
-            elif (current_file.parent.parent / "configs").exists():
-                project_root = current_file.parent.parent
-            else:
-                project_root = current_file.parent
-                while project_root != project_root.parent:
-                    if (project_root / "configs").exists():
-                        break
-                    project_root = project_root.parent
-
-            self.config_dir = project_root / "configs"
-
-            if not self.config_dir.exists():
-                raise FileNotFoundError(f"Config directory not found: {self.config_dir}")
-
-            logger.info(f"📁 Config directory: {self.config_dir}")
-
-            # Initialize config manager
-            self.config_manager = ConfigManager(config_dir=str(self.config_dir))
-
-            # Get available domains
-            self.available_domains = self.config_manager.get_all_domain_names()
-
-            # Initialize document tracking
-            for domain in self.available_domains:
-                self.uploaded_documents[domain] = []
-
-            logger.info(f"✅ Initialized with {len(self.available_domains)} domains")
-
-        except Exception as e:
-            logger.error(f"Failed to initialize AppState: {e}")
-            self.available_domains = []
-
-    def get_pipeline(self, domain: str) -> DocumentPipeline:
-        """Get or create pipeline for domain (cached)."""
-        if domain not in self.pipelines:
-            logger.info(f"Creating pipeline for domain: {domain}")
-            self.pipelines[domain] = DocumentPipeline(
-                domain=domain,
-                config_dir=str(self.config_dir)
-            )
-        return self.pipelines[domain]
-
-    def add_document_record(self, domain: str, doc_info: Dict):
-        """Track uploaded document."""
-        if domain not in self.uploaded_documents:
-            self.uploaded_documents[domain] = []
-        self.uploaded_documents[domain].append(doc_info)
-
-    def get_documents(self, domain: str) -> List[Dict]:
-        """Get all documents for a domain."""
-        return self.uploaded_documents.get(domain, [])
-
-    def remove_document_record(self, domain: str, doc_id: str):
-        """Remove document from tracking."""
-        if domain in self.uploaded_documents:
-            self.uploaded_documents[domain] = [
-                doc for doc in self.uploaded_documents[domain]
-                if doc['doc_id'] != doc_id
-            ]
-
-    def refresh_domains(self):
-        """Refresh domain list after create/delete."""
+        # Get all domain names (returns list of strings like ['hr', 'finance'])
         self.available_domains = self.config_manager.get_all_domain_names()
 
-        # Initialize tracking for new domains
-        for domain in self.available_domains:
-            if domain not in self.uploaded_documents:
-                self.uploaded_documents[domain] = []
+        # Build domain configs dictionary by loading each domain
+        self.domain_confs = {}
+        for domain_name in self.available_domains:
+            try:
+                domain_conf = self.config_manager.load_domain_config(domain_name)
+                self.domain_confs[domain_name] = domain_conf
+            except Exception as e:
+                logger.error(f"Failed to load config for domain {domain_name}: {e}")
+
+        logger.info(f"Initialized AppState with domains: {self.available_domains}")
+
+        # {domain_id: DocumentPipeline instance}
+        self.pipeline_cache = {}
+
+        # {domain_id: [document metadata]}
+        self.doc_registry = {dom: [] for dom in self.available_domains}
+
+        # Initialize documents for each domain
+        self.refresh_documents()
+
+    def get_pipeline(self, domain_id):
+        """Get or create pipeline for a domain"""
+        if domain_id not in self.pipeline_cache:
+            # Pass domain_id STRING, not the config object
+            # DocumentPipeline will load the config internally
+            self.pipeline_cache[domain_id] = DocumentPipeline(
+                domain=domain_id,  # Pass the domain name string
+                config_dir="configs"  # Pass config directory
+            )
+            logger.info(f"Created pipeline for domain: {domain_id}")
+        return self.pipeline_cache[domain_id]
+
+    def refresh_domains(self):
+        """Reload all domain configurations"""
+        self.available_domains = self.config_manager.get_all_domain_names()
+        self.domain_confs = {}
+        for domain_name in self.available_domains:
+            try:
+                domain_conf = self.config_manager.load_domain_config(domain_name)
+                self.domain_confs[domain_name] = domain_conf
+            except Exception as e:
+                logger.error(f"Failed to load config for domain {domain_name}: {e}")
+        logger.info(f"Refreshed domains: {self.available_domains}")
+
+    def refresh_documents(self):
+        """Refresh document list for all domains"""
+        for dom in self.available_domains:
+            try:
+                pipe = self.get_pipeline(dom)
+                # Get documents from vector store
+                if hasattr(pipe.vector_store, 'list_documents'):
+                    self.doc_registry[dom] = pipe.vector_store.list_documents()
+                else:
+                    # Fallback: empty list
+                    self.doc_registry[dom] = []
+            except Exception as e:
+                logger.warning(f"Could not refresh documents for domain {dom}: {e}")
+                self.doc_registry[dom] = []
+
+    def add_document_record(self, domain, record):
+        """Add a document record to registry"""
+        self.doc_registry.setdefault(domain, []).append(record)
+
+    def remove_document_record(self, domain, doc_id):
+        """Remove a document record from registry"""
+        docs = self.doc_registry.get(domain, [])
+        self.doc_registry[domain] = [d for d in docs if d.get('doc_id') != doc_id]
+
+    def get_documents(self, domain):
+        """Get all documents for a domain"""
+        return self.doc_registry.get(domain, [])
 
 
-# Initialize global state
+# Initialize app state
 app_state = AppState()
 
 
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-def format_file_size(size_bytes: int) -> str:
-    """Format file size in human-readable format."""
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size_bytes < 1024.0:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.1f} TB"
-
-
-def extract_text_from_file(file_path: str) -> tuple[str, str]:
-    """
-    Extract text using project's file processors.
-
-    This is just a thin wrapper - actual logic is in utils/file_parsers/
-    """
-    file_path_obj = Path(file_path)
-    file_extension = file_path_obj.suffix.lower()
+# ====== UI Functions and Event Handlers ======
+def on_domain_select(domain_id):
+    """Handler for domain selection"""
+    if not domain_id:
+        return "Please select a domain"
 
     try:
-        if file_extension == '.pdf':
-            # Use project's PDF processor
-            processor = PDFProcessor(backend="pymupdf")  # or "pypdf2" as fallback
-            text = processor.extract_text(str(file_path_obj))
-            return text, "PDF"
+        conf = app_state.domain_confs[domain_id]
+        documents = app_state.get_documents(domain_id)
 
-        elif file_extension == '.docx':
-            # Use project's DOCX processor
-            processor = DOCXProcessor()
-            text = processor.extract_text(str(file_path_obj))
-            return text, "DOCX"
+        # Build document summary
+        doc_summary = "\n".join([
+            f"- **{doc['doc_id']}**: {doc.get('filename', 'Unknown')} ({doc.get('chunk_count', '-')} chunks)"
+            for doc in documents
+        ]) or "No documents uploaded yet."
 
-        elif file_extension == '.txt':
-            # Use project's TXT processor
-            processor = TXTProcessor()
-            text = processor.extract_text(str(file_path_obj))
-            return text, "TXT"
+        # Extract config details safely using Pydantic model attributes
+        return f"""### Domain: {conf.display_name}
 
-        else:
-            raise ValueError(f"Unsupported file format: {file_extension}")
+**Description:** {conf.description}
 
+**Configuration:**
+- **Embedding Provider:** {conf.embeddings.provider}
+- **Embedding Model:** {conf.embeddings.model_name}
+- **Vector Store:** {conf.vector_store.provider}
+- **Chunking Strategy:** {conf.chunking.strategy}
+- **Chunk Size:** {conf.chunking.recursive.chunk_size if conf.chunking.strategy == 'recursive' else 'N/A'}
+- **Retrieval Strategy:** {conf.retrieval.strategy}
+- **Top-K:** {conf.retrieval.top_k}
+
+**Uploaded Documents:**
+{doc_summary}"""
     except Exception as e:
-        logger.error(f"Extraction failed: {e}")
-        raise RuntimeError(f"Could not extract text: {e}")
+        logger.error(f"Error in on_domain_select: {e}")
+        return f"Error loading domain info: {e}"
 
 
-# =============================================================================
-# UI Functions - Domain Management
-# =============================================================================
-
-def on_domain_select(domain_name: str) -> tuple[str, str, str]:
-    """Handle domain selection with document count."""
+def on_document_upload(domain_id, file, uploader_id):
+    """Handler for document upload"""
     try:
-        app_state.current_domain = domain_name
-        pipeline = app_state.get_pipeline(domain_name)
-        config = pipeline.config
+        if not file:
+            return "❌ No file provided.", []
+        if not domain_id:
+            return "❌ Please select a domain.", []
 
-        # Get document count
-        doc_count = len(app_state.get_documents(domain_name))
+        logger.info(f"Uploading {file.name} to domain {domain_id}")
 
-        info_md = f"""
-## 🏢 Domain: {config.display_name}
+        # Get pipeline
+        pipeline = app_state.get_pipeline(domain_id)
+        doc_id = f"{Path(file.name).stem}_{int(datetime.now().timestamp())}"
 
-**Description:** {config.description}  
-**Documents Uploaded:** {doc_count}
+        # Process document using the pipeline
+        result = pipeline.process_document(
+            file_path=file.name,
+            doc_id=doc_id,
+            uploader_id=uploader_id or "anonymous"
+        )
 
-### ⚙️ Configuration
+        if not result.get('success'):
+            return f"❌ Processing failed: {result.get('error', 'Unknown error')}", []
 
-**Chunking:** `{config.chunking.strategy}` (size: {config.chunking.recursive.chunk_size}, overlap: {config.chunking.recursive.overlap})  
-**Embedding:** `{config.embeddings.provider}` ({config.embeddings.model_name})  
-**Vector Store:** `{config.vector_store.provider}` ({config.vector_store.chromadb.collection_name if config.vector_store.provider == 'chromadb' else 'N/A'})
+        # Add to registry
+        app_state.add_document_record(domain_id, {
+            "doc_id": doc_id,
+            "filename": file.name,
+            "upload_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "chunk_count": result.get('chunks_created', 0),  # CORRECT KEY
+            "file_size": result.get('file_size', 0)
+        })
 
----
-✅ Ready for document processing!
-        """
+        # Format metrics for display - READ FROM CORRECT KEYS
+        metrics_table = [
+            ["Document ID", doc_id],
+            ["Chunks Created", result.get('chunks_created', 0)],  # CORRECT KEY
+            ["Processing Time", f"{result.get('processing_time', 0):.2f}s"],
+            ["Embedding Model", result.get('embedding_model', 'N/A')],
+            ["Chunking Strategy", result.get('chunking_strategy', 'N/A')],
+            ["Vector Store", result.get('vector_store', 'N/A')],
+            ["File Size", f"{result.get('file_size', 0) / 1024:.1f} KB"],
+            ["Status", "✅ Success"]
+        ]
 
-        status_msg = f"✅ Selected: **{config.display_name}** ({doc_count} documents)"
+        success_msg = f"""✅ Successfully uploaded `{file.name}` as `{doc_id}`
 
-        # Return document list
-        docs_md = format_document_list(domain_name)
-
-        return info_md, status_msg, docs_md
-
-    except Exception as e:
-        error_msg = f"❌ Error loading domain: {str(e)}"
-        return "Error loading domain", error_msg, ""
-
-
-def format_document_list(domain: str) -> str:
-    """Format document list for display."""
-    documents = app_state.get_documents(domain)
-
-    if not documents:
-        return "📝 **No documents uploaded yet**\n\nUpload documents in Tab 2 to see them here."
-
-    md = f"## 📚 Documents in {domain.upper()} Domain ({len(documents)} total)\n\n"
-
-    for i, doc in enumerate(documents, 1):
-        md += f"""
-### {i}. {doc['doc_id']}
-- **Uploaded:** {doc['upload_time']}
-- **Chunks:** {doc['chunks_created']}
-- **File:** {doc['file_name']} ({doc['file_size']})
-- **Uploader:** {doc['uploader_id'] or 'Anonymous'}
-
----
+**Processing Summary:**
+- **Chunks:** {result.get('chunks_created', 0)}
+- **Time:** {result.get('processing_time', 0):.2f}s
+- **Model:** {result.get('embedding_model', 'N/A')}
 """
 
-    return md
+        return success_msg, metrics_table
+
+    except Exception as e:
+        logger.error(f"Upload error: {e}", exc_info=True)
+        return f"❌ Error: {str(e)}", []
 
 
-def on_create_domain(
-        domain_id: str,
-        display_name: str,
-        description: str,
-        collection_name: str
-) -> tuple[str, str, List[str]]:
-    """Create a new domain configuration."""
+def on_query(domain_id, query, top_k):
+    """Handler for search queries"""
     try:
-        # Validate inputs
-        if not domain_id.strip():
-            return "❌ Domain ID is required", "❌ Error", app_state.available_domains
+        if not query:
+            return []
+        if not domain_id:
+            return []
 
-        # Create config file path
-        config_file = app_state.config_dir / "domains" / f"{domain_id}_domain.yaml"
+        logger.info(f"Searching domain '{domain_id}' for: {query}")
 
-        if config_file.exists():
-            return f"❌ Domain '{domain_id}' already exists!", "❌ Error", app_state.available_domains
+        pipeline = app_state.get_pipeline(domain_id)
 
-        # Create config from template
-        config_data = {
-            'name': domain_id,
-            'display_name': display_name or domain_id.upper(),
-            'description': description or f"Configuration for {domain_id} domain",
-            'vector_store': {
-                'provider': 'chromadb',
-                'chromadb': {
-                    'persist_directory': './data/chroma_db',
-                    'collection_name': collection_name or f'{domain_id}_collection'
+        # STEP 1: Generate query embedding
+        query_embedding = pipeline.embedder.embed_texts([query])[0]
+
+        # STEP 2: Search vector store directly (pipeline has no search method)
+        results = pipeline.vector_store.search(
+            query_embedding=query_embedding,
+            top_k=int(top_k),
+            filters=None  # Optional: add domain filter
+        )
+
+        # STEP 3: Format results for display
+        res_table = []
+        for r in results:
+            res_table.append([
+                f"{1 - r.get('distance', 0):.4f}",  # Convert distance to score (1 - distance)
+                r.get('document', '')[:150] + "..." if len(r.get('document', '')) > 150 else r.get('document', ''),
+                r.get('metadata', {}).get('doc_id', ''),
+                r.get('id', ''),  # chunk_id
+                f"Page: {r.get('metadata', {}).get('page_num', 'N/A')}"
+            ])
+
+        logger.info(f"Found {len(results)} results")
+        return res_table
+
+    except Exception as e:
+        logger.error(f"Query error: {e}", exc_info=True)
+        return []
+
+
+
+def on_create_domain(domain_id, display_name, desc):
+    """Handler for creating new domain"""
+    try:
+        if not domain_id:
+            return "❌ Domain ID is required"
+        if domain_id in app_state.available_domains:
+            return f"❌ Domain ID `{domain_id}` already exists"
+
+        # Create minimal config
+        config = {
+            "name": domain_id,
+            "display_name": display_name or domain_id,
+            "description": desc or f"Domain for {domain_id}",
+            "embeddings": {
+                "provider": "SentenceTransformers",
+                "model_name": "all-MiniLM-L6-v2",
+                "device": "cpu",
+                "batch_size": 32,
+                "normalize_embeddings": True
+            },
+            "chunking": {
+                "strategy": "recursive",
+                "recursive": {
+                    "chunk_size": 500,
+                    "overlap": 50
                 }
             },
-            'embeddings': {
-                'provider': 'sentence_transformers',
-                'model_name': 'all-MiniLM-L6-v2',
-                'device': 'cpu',
-                'batch_size': 32,
-                'normalize_embeddings': True
-            },
-            'chunking': {
-                'strategy': 'recursive',
-                'recursive': {
-                    'chunk_size': 500,
-                    'overlap': 50
-                },
-                'semantic': {
-                    'similarity_threshold': 0.7,
-                    'max_chunk_size': 1000
+            "vector_store": {
+                "provider": "ChromaDB",
+                "chromadb": {
+                    "persist_directory": ".data/chromadb",
+                    "collection_name": f"{domain_id}_collection"
                 }
             },
-            'retrieval': {
-                'strategy': 'hybrid',
-                'alpha': 0.7,
-                'top_k': 10,
-                'enable_metadata_filtering': True,
-                'normalize_scores': True
+            "retrieval": {
+                "strategy": "hybrid",
+                "alpha": 0.7,
+                "top_k": 10,
+                "enable_metadata_filtering": True,
+                "normalize_scores": True
             },
-            'security': {
-                'allowed_file_types': ['pdf', 'docx', 'txt'],
-                'max_file_size_mb': 50
+            "security": {
+                "allowed_file_types": [".pdf", ".docx", ".txt"],
+                "max_file_size_mb": 50
             }
         }
 
-        # Write config file
-        with open(config_file, 'w') as f:
-            yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+        # Save config
+        config_dir = Path("configs/domains")
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_path = config_dir / f"{domain_id}_domain.yaml"
 
-        # Refresh domains
+        with open(config_path, "w") as f:
+            yaml.safe_dump(config, f)
+
         app_state.refresh_domains()
+        logger.info(f"Created new domain: {domain_id}")
 
-        logger.info(f"✅ Created domain: {domain_id}")
-
-        success_md = f"""
-## ✅ Domain Created Successfully!
-
-**Domain ID:** `{domain_id}`  
-**Display Name:** {display_name}  
-**Config File:** `{config_file.name}`
-
-The new domain is now available in the dropdown.
-        """
-
-        return success_md, f"✅ Created domain: **{domain_id}**", app_state.available_domains
+        # Return updated domain list for dropdowns
+        return f"✅ Domain `{display_name or domain_id}` created successfully!"
 
     except Exception as e:
-        error_msg = f"❌ Failed to create domain: {str(e)}"
-        logger.error(error_msg)
-        return error_msg, "❌ Error", app_state.available_domains
+        logger.error(f"Domain creation error: {e}", exc_info=True)
+        return f"❌ Error: {str(e)}"
 
 
-def on_delete_domain(domain_to_delete: str, confirm: bool) -> tuple[str, str, List[str]]:
-    """Delete a domain configuration."""
+def on_delete_domain(domain_id, confirm):
+    """Handler for deleting domain"""
     try:
         if not confirm:
-            return "⚠️ Please check the confirmation box to delete the domain.", "❌ Not confirmed", app_state.available_domains
+            return "❌ Please check the confirmation box"
+        if not domain_id:
+            return "❌ Please select a domain"
 
-        if not domain_to_delete:
-            return "❌ Please select a domain to delete.", "❌ Error", app_state.available_domains
+        config_path = Path(f"configs/domains/{domain_id}_domain.yaml")
+        if config_path.exists():
+            config_path.unlink()
 
-        # Delete config file
-        config_file = app_state.config_dir / "domains" / f"{domain_to_delete}_domain.yaml"
+        # Clear from cache
+        if domain_id in app_state.pipeline_cache:
+            del app_state.pipeline_cache[domain_id]
 
-        if not config_file.exists():
-            return f"❌ Domain config not found: {config_file}", "❌ Error", app_state.available_domains
-
-        # Delete the file
-        config_file.unlink()
-
-        # Clear pipeline cache
-        if domain_to_delete in app_state.pipelines:
-            del app_state.pipelines[domain_to_delete]
-
-        # Clear document tracking
-        if domain_to_delete in app_state.uploaded_documents:
-            del app_state.uploaded_documents[domain_to_delete]
-
-        # Refresh domains
         app_state.refresh_domains()
-
-        logger.info(f"✅ Deleted domain: {domain_to_delete}")
-
-        success_md = f"""
-## ✅ Domain Deleted Successfully!
-
-**Deleted Domain:** `{domain_to_delete}`  
-**Config File Removed:** `{config_file.name}`
-
-⚠️ **Note:** The vector store data still exists in `./data/chroma_db/`.
-To completely remove the data, manually delete the collection directory.
-        """
-
-        return success_md, f"✅ Deleted domain: **{domain_to_delete}**", app_state.available_domains
+        logger.info(f"Deleted domain: {domain_id}")
+        return f"✅ Domain `{domain_id}` deleted! (Vector store data may still exist)"
 
     except Exception as e:
-        error_msg = f"❌ Failed to delete domain: {str(e)}"
-        logger.error(error_msg)
-        return error_msg, "❌ Error", app_state.available_domains
+        logger.error(f"Domain deletion error: {e}", exc_info=True)
+        return f"❌ Error: {str(e)}"
 
 
-# =============================================================================
-# UI Functions - Document Management
-# =============================================================================
-
-def on_document_upload(
-        file,
-        doc_id: str,
-        uploader_id: str
-) -> tuple[str, str, str, str]:
-    """Enhanced document upload - NON-GENERATOR VERSION (more reliable)."""
-    if not app_state.current_domain:
-        return (
-            "⚠️ **Please select a domain first in Tab 1!**",
-            "❌ No domain selected",
-            "",
-            ""
-        )
-
-    if file is None:
-        return (
-            "⚠️ **Please upload a file!**",
-            "❌ No file uploaded",
-            "",
-            ""
-        )
-
-    if not doc_id.strip():
-        return (
-            "⚠️ **Please provide a Document ID!**",
-            "❌ Document ID required",
-            "",
-            ""
-        )
-
-    try:
-        pipeline = app_state.get_pipeline(app_state.current_domain)
-        file_path = file.name
-        file_size = Path(file_path).stat().st_size
-
-        # Build processing log
-        log_parts = []
-
-        log_parts.append(f"""
-### 📄 Processing Document
-
-**File:** `{Path(file_path).name}`  
-**Size:** {format_file_size(file_size)}  
-**Document ID:** `{doc_id}`  
-**Domain:** `{app_state.current_domain}`  
-**Uploader:** `{uploader_id or 'Anonymous'}`
-
----
-""")
-
-        # Step 1: Extract text
-        logger.info(f"Extracting text from {file_path}")
-        log_parts.append("⏳ **Step 1:** Extracting text from file...\n")
-
-        text, file_type = extract_text_from_file(file_path)
-
-        log_parts.append(f"✅ **Step 1 Complete:** Extracted {len(text)} characters from {file_type}\n\n")
-
-        # Step 2: Process through pipeline
-        log_parts.append(f"⏳ **Step 2:** Processing with {pipeline.config.chunking.strategy} chunking...\n")
-
-        logger.info(f"Processing document through pipeline: {doc_id}")
-        result = pipeline.process_document(
-            file_path=file_path,
-            doc_id=doc_id,
-            uploader_id=uploader_id or None
-        )
-
-        if result['success']:
-            # Add to tracking
-            doc_info = {
-                'doc_id': doc_id,
-                'file_name': Path(file_path).name,
-                'file_size': format_file_size(file_size),
-                'chunks_created': result['chunks_created'],
-                'upload_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                'uploader_id': uploader_id or 'Anonymous'
-            }
-            app_state.add_document_record(app_state.current_domain, doc_info)
-
-            log_parts.append(f"""
-✅ **Step 2 Complete:** Created {result['chunks_created']} chunks
-
-⏳ **Step 3:** Generating embeddings with `{result['embedding_model']}`...
-✅ **Step 3 Complete:** Embeddings generated
-
-⏳ **Step 4:** Storing in `{result['vector_store']}` vector store...
-✅ **Step 4 Complete:** All chunks stored successfully
-
----
-
-## ✅ Upload Successful!
-
-**Processing Time:** {result['processing_time']:.2f}s  
-**Chunks Created:** {result['chunks_created']}  
-**Status:** 🎉 Document is now searchable in the vector store!
-
-You can now query this document in **Tab 3: Query Documents**
-""")
-
-            # Build metrics
-            metrics_md = f"""
-### 📊 Processing Metrics
-
-| Metric | Value |
-|--------|-------|
-| **Chunks Created** | {result['chunks_created']} |
-| **Processing Time** | {result['processing_time']:.2f}s |
-| **Characters Extracted** | {len(text):,} |
-| **Chunking Strategy** | {result['chunking_strategy']} |
-| **Embedding Model** | {result['embedding_model']} |
-| **Vector Store** | {result['vector_store']} |
-| **File Hash** | `{result['file_hash'][:16]}...` |
-"""
-
-            status_msg = f"✅ **SUCCESS:** '{doc_id}' uploaded successfully ({result['chunks_created']} chunks created)"
-
-            # Update document list
-            docs_md = format_document_list(app_state.current_domain)
-
-            # Combine all log parts
-            full_log = "".join(log_parts)
-
-            logger.info(f"✅ Document uploaded successfully: {doc_id}")
-
-            return (full_log, status_msg, metrics_md, docs_md)
-
-        else:
-            # Processing failed
-            log_parts.append(f"""
-❌ **Processing Failed**
-
-**Error Type:** {result.get('error_type', 'Unknown')}  
-**Error Message:** {result.get('error', 'Unknown error occurred')}
-
-**Troubleshooting:**
-- Check if the file format is supported (PDF, DOCX, TXT)
-- Verify the file is not corrupted
-- Check the terminal/console for detailed error logs
-""")
-
-            full_log = "".join(log_parts)
-            error_msg = f"❌ Processing failed: {result.get('error', 'Unknown error')}"
-
-            logger.error(f"Document processing failed: {result.get('error')}")
-
-            return (full_log, error_msg, "", "")
-
-    except Exception as e:
-        error_msg = f"❌ Unexpected Error: {str(e)}"
-        logger.error(f"Upload error: {e}", exc_info=True)
-
-        error_log = f"""
-## ❌ Upload Error
-
-**Error:** {str(e)}
-
-**What to check:**
-1. Is a domain selected in Tab 1?
-2. Is the file format supported?
-3. Check the terminal for detailed error logs
-
-**File Info:**
-- Path: {file.name if file else 'None'}
-- Document ID: {doc_id}
-- Domain: {app_state.current_domain}
-"""
-
-        return (error_log, error_msg, "", "")
-
-
-def on_delete_document(doc_id_to_delete: str, confirm: bool) -> tuple[str, str]:
-    """Delete a document from vector store."""
+def on_delete_document(domain_id, doc_id, confirm):
+    """Handler for deleting document"""
     try:
         if not confirm:
-            return "⚠️ Check the confirmation box to delete.", "❌ Not confirmed"
+            return "❌ Please check the confirmation box"
+        if not domain_id or not doc_id:
+            return "❌ Please provide domain and document ID"
 
-        if not app_state.current_domain:
-            return "❌ Select a domain first.", "❌ No domain"
-
-        if not doc_id_to_delete.strip():
-            return "❌ Enter a document ID to delete.", "❌ No doc ID"
+        pipeline = app_state.get_pipeline(domain_id)
 
         # Delete from vector store
-        pipeline = app_state.get_pipeline(app_state.current_domain)
-        result = pipeline.delete_document(doc_id_to_delete)
+        if hasattr(pipeline, 'delete_document'):
+            pipeline.delete_document(doc_id)
+        elif hasattr(pipeline.vector_store, 'delete_by_doc_id'):
+            pipeline.vector_store.delete_by_doc_id(doc_id)
 
-        if result['success']:
-            # Remove from tracking
-            app_state.remove_document_record(app_state.current_domain, doc_id_to_delete)
+        app_state.remove_document_record(domain_id, doc_id)
 
-            success_md = f"""
-## ✅ Document Deleted
-
-**Document ID:** `{doc_id_to_delete}`  
-**Domain:** `{app_state.current_domain}`
-
-All chunks for this document have been removed from the vector store.
-"""
-
-            return success_md, f"✅ Deleted: **{doc_id_to_delete}**"
-        else:
-            return f"❌ Error: {result.get('error')}", "❌ Delete failed"
+        logger.info(f"Deleted document {doc_id} from domain {domain_id}")
+        return f"✅ Document `{doc_id}` deleted successfully"
 
     except Exception as e:
-        error_msg = f"❌ Error: {str(e)}"
-        return error_msg, error_msg
+        logger.error(f"Document deletion error: {e}", exc_info=True)
+        return f"❌ Error: {str(e)}"
 
 
-# =============================================================================
-# UI Functions - Query
-# =============================================================================
-
-def on_query_submit(query: str, top_k: int, domain_filter: str) -> tuple[str, str]:
-    """Handle query with results."""
-    if not query.strip():
-        return "⚠️ **Enter a query!**", "❌ Empty query"
-
-    query_domain = domain_filter if domain_filter != "All Domains" else app_state.current_domain
-
-    if not query_domain:
-        return "⚠️ **Select a domain first!**", "❌ No domain"
+def on_chunk_docs_domain_select(domain_id):
+    """Get document list for chunk viewer when domain is selected"""
+    if not domain_id:
+        logger.warning("No domain selected for chunk viewer")
+        return gr.Dropdown(choices=[])
 
     try:
-        pipeline = app_state.get_pipeline(query_domain)
+        logger.info(f"Fetching documents for chunk viewer in domain: {domain_id}")
 
-        # Generate embedding and search
-        query_embedding = pipeline.embedder.embed_texts([query])[0]
+        pipeline = app_state.get_pipeline(domain_id)
+        collection = pipeline.vector_store.collection
 
-        start_time = time.time()
-        results = pipeline.vector_store.search(
-            query_embedding=query_embedding,
-            top_k=top_k,
-            filters={"domain": query_domain} if query_domain else None
-        )
-        search_time = time.time() - start_time
+        # Get all items from the collection
+        all_results = collection.get(include=["metadatas"])
 
-        # Format results
-        if not results:
-            results_md = f"""
-## 🔍 Query Results
+        if not all_results or not all_results.get('metadatas'):
+            logger.warning(f"No documents found in domain '{domain_id}'")
+            return gr.Dropdown(choices=[])
 
-**Query:** "{query}"  
-**Domain:** {query_domain}
+        # Extract unique doc_ids from metadata
+        doc_ids = set()
+        for metadata in all_results['metadatas']:
+            if metadata and 'doc_id' in metadata:
+                doc_ids.add(metadata['doc_id'])
 
----
+        choices = sorted(list(doc_ids))
 
-⚠️ **No results found.** Try uploading documents first.
-"""
-            status_msg = "⚠️ No results"
-        else:
-            results_md = f"""
-## 🔍 Query Results
+        logger.info(f"Found {len(choices)} document(s) in domain '{domain_id}': {choices}")
 
-**Query:** "{query}"  
-**Domain:** {query_domain}  
-**Found:** {len(results)} results ({search_time:.3f}s)
-
----
-
-"""
-            for i, result in enumerate(results, 1):
-                score = result.get('score', result.get('distance', 0))
-                metadata = result['metadata']
-
-                results_md += f"""
-### 📄 Result {i} • Score: {score:.4f}
-
-**Document:** `{metadata.get('doc_id', 'Unknown')}`  
-**Domain:** `{metadata.get('domain', 'Unknown')}`
-
-**Content:**
-> {result['document'][:500]}...
-
----
-"""
-
-            status_msg = f"✅ Found {len(results)} results in {search_time:.3f}s"
-
-        return results_md, status_msg
+        return gr.Dropdown(choices=choices, value=choices[0] if choices else None)
 
     except Exception as e:
-        error_msg = f"❌ Search Error: {str(e)}"
-        return f"## {error_msg}", error_msg
+        logger.error(f"Failed to get documents for domain '{domain_id}': {e}", exc_info=True)
+        return gr.Dropdown(choices=[])
 
 
-# =============================================================================
-# Gradio UI Layout
-# =============================================================================
+def on_chunk_docs_select(domain_id, doc_id):
+    """Get chunks for selected document"""
+    if not domain_id or not doc_id:
+        logger.warning(f"Missing parameters - domain: {domain_id}, doc_id: {doc_id}")
+        return []
 
-def create_ui():
-    """Create enhanced Gradio UI."""
+    try:
+        logger.info(f"Fetching chunks for doc_id: '{doc_id}' in domain: '{domain_id}'")
 
-    with gr.Blocks(title="Multi-Domain RAG System", theme=gr.themes.Soft()) as app:
-        gr.Markdown("""
-        # Multi-Domain Document Intelligence Platform
+        pipeline = app_state.get_pipeline(domain_id)
+        collection = pipeline.vector_store.collection
 
-        **Complete document management with domain administration**
-        """)
-
-        # Shared status bar
-        status_bar = gr.Markdown("ℹ️ Select a domain to get started")
-
-        # =========== TAB 1: Domain Selection & Info ===========
-
-        with gr.Tab("1️⃣ Domain Selection"):
-            gr.Markdown("## 🏢 Select Your Domain")
-
-            with gr.Row():
-                with gr.Column(scale=1):
-                    domain_dropdown = gr.Dropdown(
-                        choices=app_state.available_domains,
-                        label="Available Domains",
-                        value=app_state.available_domains[0] if app_state.available_domains else None
-                    )
-                    domain_select_btn = gr.Button("🔄 Load Domain", variant="primary")
-
-                with gr.Column(scale=2):
-                    domain_info = gr.Markdown("Select a domain...")
-
-            with gr.Accordion("📚 Documents in this Domain", open=True):
-                domain_docs_list = gr.Markdown("Select a domain to see documents")
-
-        # =========== TAB 2: Document Upload ===========
-
-        with gr.Tab("2️⃣ Document Upload"):
-            gr.Markdown("## 📤 Upload & Process Documents")
-
-            with gr.Row():
-                with gr.Column(scale=1):
-                    file_upload = gr.File(
-                        label="Upload Document",
-                        file_types=[".pdf", ".docx", ".txt"]
-                    )
-                    doc_id_input = gr.Textbox(label="Document ID", placeholder="doc_123")
-                    uploader_id_input = gr.Textbox(label="Uploader ID (Optional)", placeholder="user@example.com")
-                    process_btn = gr.Button("🚀 Process Document", variant="primary", size="lg")
-
-                with gr.Column(scale=2):
-                    processing_log = gr.Markdown("Upload a document to see processing...")
-                    with gr.Accordion("📊 Metrics", open=False):
-                        metrics_display = gr.Markdown("")
-
-            with gr.Accordion("📚 Updated Document List", open=True):
-                upload_docs_list = gr.Markdown("")
-
-        # =========== TAB 3: Query ===========
-
-        with gr.Tab("3️⃣ Query Documents"):
-            gr.Markdown("## 🔍 Search Your Documents")
-
-            with gr.Row():
-                with gr.Column(scale=1):
-                    query_input = gr.Textbox(label="Enter Query", lines=3, placeholder="What is RAG?")
-                    with gr.Row():
-                        top_k_slider = gr.Slider(1, 20, value=5, step=1, label="Top K Results")
-                        domain_filter_dropdown = gr.Dropdown(
-                            choices=["All Domains"] + app_state.available_domains,
-                            value="All Domains",
-                            label="Filter by Domain"
-                        )
-                    search_btn = gr.Button("🔍 Search", variant="primary", size="lg")
-
-                with gr.Column(scale=2):
-                    search_results = gr.Markdown("Enter a query to search...")
-
-        # =========== TAB 4: Create Domain ===========
-
-        with gr.Tab("4️⃣ Create Domain"):
-            gr.Markdown("## ➕ Create New Domain")
-
-            with gr.Row():
-                with gr.Column():
-                    new_domain_id = gr.Textbox(label="Domain ID", placeholder="engineering")
-                    new_display_name = gr.Textbox(label="Display Name", placeholder="Engineering")
-                    new_description = gr.Textbox(label="Description", placeholder="Engineering documentation and APIs",
-                                                 lines=3)
-                    new_collection_name = gr.Textbox(label="Collection Name", placeholder="engineering_collection")
-                    create_domain_btn = gr.Button("➕ Create Domain", variant="primary")
-
-                with gr.Column():
-                    create_domain_result = gr.Markdown("Fill the form and click Create")
-
-        # =========== TAB 5: Delete Domain ===========
-
-        with gr.Tab("5️⃣ Delete Domain"):
-            gr.Markdown("## 🗑️ Delete Domain")
-
-            with gr.Row():
-                with gr.Column():
-                    delete_domain_dropdown = gr.Dropdown(
-                        choices=app_state.available_domains,
-                        label="Select Domain to Delete"
-                    )
-                    delete_confirm_checkbox = gr.Checkbox(label="⚠️ I confirm deletion", value=False)
-                    delete_domain_btn = gr.Button("🗑️ Delete Domain", variant="stop")
-
-                with gr.Column():
-                    delete_domain_result = gr.Markdown("⚠️ **Warning:** This cannot be undone!")
-
-        # =========== TAB 6: Manage Documents ===========
-
-        with gr.Tab("6️⃣ Manage Documents"):
-            gr.Markdown("## 📁 Document Management")
-
-            with gr.Row():
-                with gr.Column(scale=1):
-                    gr.Markdown("### 🗑️ Delete Document")
-                    delete_doc_id = gr.Textbox(label="Document ID to Delete", placeholder="doc_123")
-                    delete_doc_confirm = gr.Checkbox(label="⚠️ Confirm deletion", value=False)
-                    delete_doc_btn = gr.Button("🗑️ Delete Document", variant="stop")
-                    delete_doc_result = gr.Markdown("")
-
-                with gr.Column(scale=2):
-                    gr.Markdown("### 📚 All Documents")
-                    manage_docs_list = gr.Markdown("Select a domain to see documents")
-
-
-
-                # =========== Event Handlers ===========
-
-        # Domain selection
-        domain_select_btn.click(
-            fn=on_domain_select,
-            inputs=[domain_dropdown],
-            outputs=[domain_info, status_bar, domain_docs_list]
+        # Get all chunks with matching doc_id using metadata filter
+        results = collection.get(
+            where={"doc_id": doc_id},
+            include=["documents", "metadatas"]
         )
 
-        domain_dropdown.change(
-            fn=on_domain_select,
-            inputs=[domain_dropdown],
-            outputs=[domain_info, status_bar, domain_docs_list]
+        if not results or not results.get('ids'):
+            logger.warning(f"No chunks found for doc_id: '{doc_id}'")
+            return []
+
+        # Format as table
+        table = []
+        num_chunks = len(results['ids'])
+
+        for i in range(num_chunks):
+            chunk_id = results['ids'][i]
+            document = results['documents'][i] if i < len(results['documents']) else ""
+            metadata = results['metadatas'][i] if i < len(results['metadatas']) else {}
+
+            table.append([
+                chunk_id[:50] if len(chunk_id) > 50 else chunk_id,  # Chunk ID (truncated)
+                str(metadata.get('char_start', 'N/A')),  # Start position
+                str(metadata.get('char_end', 'N/A')),  # End position
+                document[:100] + "..." if len(document) > 100 else document,  # Preview
+                str(metadata.get('page_num', 'N/A')),  # Page number
+                f"Domain: {metadata.get('domain', 'N/A')}"  # Metadata info
+            ])
+
+        logger.info(f"Retrieved {len(table)} chunks for doc_id: '{doc_id}'")
+        return table
+
+    except Exception as e:
+        logger.error(f"Chunk retrieval error: {e}", exc_info=True)
+        return []
+
+
+# ====== Gradio UI Layout ======
+with gr.Blocks(theme=gr.themes.Soft()) as demo:
+    gr.Markdown("# 🧠 Multi-Domain Document Intelligence Platform (MVP)")
+    gr.Markdown("**Pipeline:** Upload → Chunk → Embed → Store → Retrieve → Inspect")
+
+    with gr.Tab("1️⃣ Domain Info"):
+        gr.Markdown("### Select a domain to view its configuration and uploaded documents")
+        domain_dropdown = gr.Dropdown(
+            choices=app_state.available_domains,
+            label="Select Domain",
+            value=app_state.available_domains[0] if app_state.available_domains else None
+        )
+        info_box = gr.Markdown()
+
+        # Trigger on page load
+        demo.load(on_domain_select, inputs=domain_dropdown, outputs=info_box)
+        domain_dropdown.change(on_domain_select, inputs=domain_dropdown, outputs=info_box)
+
+    with gr.Tab("2️⃣ Upload Document"):
+        gr.Markdown("### Upload documents to be processed and indexed")
+        up_domain_dropdown = gr.Dropdown(
+            choices=app_state.available_domains,
+            label="Select Domain",
+            value=app_state.available_domains[0] if app_state.available_domains else None
+        )
+        file_uploader = gr.File(label="Choose PDF/DOCX/TXT", file_types=[".pdf", ".docx", ".txt"])
+        uploader_id = gr.Textbox(label="Uploader ID (optional)", value="")
+        upload_btn = gr.Button("🚀 Upload & Process", variant="primary")
+        upload_status = gr.Markdown()
+        upload_metrics = gr.DataFrame(headers=["Metric", "Value"], label="Processing Metrics")
+        upload_btn.click(
+            on_document_upload,
+            inputs=[up_domain_dropdown, file_uploader, uploader_id],
+            outputs=[upload_status, upload_metrics]
         )
 
-        # Document upload
-        process_btn.click(
-            fn=on_document_upload,
-            inputs=[file_upload, doc_id_input, uploader_id_input],
-            outputs=[processing_log, status_bar, metrics_display, upload_docs_list]
+    with gr.Tab("3️⃣ Query Documents"):
+        gr.Markdown("### Search across your document knowledge base")
+        query_domain_dropdown = gr.Dropdown(
+            choices=app_state.available_domains,
+            label="Select Domain",
+            value=app_state.available_domains[0] if app_state.available_domains else None
+        )
+        query_box = gr.Textbox(label="Enter your question", lines=2, placeholder="What is the vacation policy?")
+        query_k = gr.Slider(minimum=1, maximum=20, value=5, step=1, label="Number of Results (Top-K)")
+        query_btn = gr.Button("🔍 Search", variant="primary")
+        results_table = gr.DataFrame(
+            headers=["Score", "Text Snippet", "Doc ID", "Chunk ID", "Metadata"],
+            label="Search Results"
+        )
+        query_btn.click(
+            on_query,
+            inputs=[query_domain_dropdown, query_box, query_k],
+            outputs=results_table
         )
 
-        # Query
-        search_btn.click(
-            fn=on_query_submit,
-            inputs=[query_input, top_k_slider, domain_filter_dropdown],
-            outputs=[search_results, status_bar]
+    with gr.Tab("4️⃣ Create Domain"):
+        gr.Markdown("### Add a new knowledge domain")
+        new_id = gr.Textbox(label="Domain ID (e.g., 'finance')", placeholder="finance")
+        new_name = gr.Textbox(label="Display Name", placeholder="Finance Department")
+        new_desc = gr.Textbox(label="Description", lines=2, placeholder="Financial policies and procedures")
+        new_btn = gr.Button("➕ Create Domain", variant="primary")
+        new_msg = gr.Markdown()
+        new_btn.click(
+            on_create_domain,
+            inputs=[new_id, new_name, new_desc],
+            outputs=new_msg
         )
 
-        # Create domain
-        create_domain_btn.click(
-            fn=on_create_domain,
-            inputs=[new_domain_id, new_display_name, new_description, new_collection_name],
-            outputs=[create_domain_result, status_bar, domain_dropdown]
+    with gr.Tab("5️⃣ Delete Domain"):
+        gr.Markdown("### Remove a domain (⚠️ use with caution)")
+        del_domain_dropdown = gr.Dropdown(choices=app_state.available_domains, label="Select Domain to Delete")
+        confirm_del = gr.Checkbox(label="I understand this will delete the domain configuration")
+        del_btn = gr.Button("🗑️ Delete Domain", variant="stop")
+        del_status = gr.Markdown()
+        del_btn.click(
+            on_delete_domain,
+            inputs=[del_domain_dropdown, confirm_del],
+            outputs=del_status
         )
 
-        # Delete domain
-        delete_domain_btn.click(
-            fn=on_delete_domain,
-            inputs=[delete_domain_dropdown, delete_confirm_checkbox],
-            outputs=[delete_domain_result, status_bar, domain_dropdown]
+    with gr.Tab("6️⃣ Manage Documents"):
+        gr.Markdown("### Delete specific documents from a domain")
+        doc_domain_dropdown = gr.Dropdown(
+            choices=app_state.available_domains,
+            label="Select Domain",
+            value=app_state.available_domains[0] if app_state.available_domains else None
+        )
+        doc_id_box = gr.Textbox(label="Document ID to Delete", placeholder="employee_handbook_1234567890")
+        confirm_doc_del = gr.Checkbox(label="Confirm deletion")
+        del_doc_btn = gr.Button("🗑️ Delete Document", variant="stop")
+        del_doc_status = gr.Markdown()
+        del_doc_btn.click(
+            on_delete_document,
+            inputs=[doc_domain_dropdown, doc_id_box, confirm_doc_del],
+            outputs=del_doc_status
         )
 
-        # Delete document
-        delete_doc_btn.click(
-            fn=on_delete_document,
-            inputs=[delete_doc_id, delete_doc_confirm],
-            outputs=[delete_doc_result, status_bar]
+    with gr.Tab("7️⃣ Chunk Viewer"):
+        gr.Markdown("### Inspect all chunks for any uploaded document")
+        gr.Markdown("**Instructions:** Select a domain, then select a document to view its chunks.")
+
+        chunk_domain_dropdown = gr.Dropdown(
+            choices=app_state.available_domains,
+            label="Select Domain",
+            value=app_state.available_domains[0] if app_state.available_domains else None
         )
 
-        # Update document list in manage tab when domain changes
-        domain_dropdown.change(
-            fn=lambda d: format_document_list(d) if d else "",
-            inputs=[domain_dropdown],
-            outputs=[manage_docs_list]
+        chunk_doc_dropdown = gr.Dropdown(
+            choices=[],
+            label="Select Document",
+            interactive=True
         )
 
-        gr.Markdown("""
-        ---
-        **💡 Tip:** Create domains → Upload documents → Query them!
+        chunk_refresh_btn = gr.Button("🔄 Refresh Document List", size="sm")
 
-        **🔧 Tech:** Python, LangChain, Sentence-Transformers, ChromaDB, Gradio
-        """)
+        chunk_table = gr.DataFrame(
+            headers=["Chunk ID", "Start", "End", "Preview (100 chars)", "Page", "Metadata"],
+            label="Document Chunks",
+            wrap=True
+        )
 
-    return app
+        chunk_status = gr.Markdown("")
 
+        # Event handlers
+        chunk_domain_dropdown.change(
+            on_chunk_docs_domain_select,
+            inputs=[chunk_domain_dropdown],
+            outputs=[chunk_doc_dropdown]
+        )
 
-# =============================================================================
-# Main Entry Point
-# =============================================================================
+        chunk_doc_dropdown.change(
+            on_chunk_docs_select,
+            inputs=[chunk_domain_dropdown, chunk_doc_dropdown],
+            outputs=[chunk_table]
+        )
+
+        # Refresh button to manually reload document list
+        chunk_refresh_btn.click(
+            on_chunk_docs_domain_select,
+            inputs=[chunk_domain_dropdown],
+            outputs=[chunk_doc_dropdown]
+        )
+
+    gr.Markdown("---")
+    gr.Markdown(
+        "💡 **MVP Demo** | Showcasing: Config-Driven Architecture • Hybrid Retrieval • Multi-Domain Support • Chunk-Level Transparency")
 
 if __name__ == "__main__":
-    logger.info("=" * 70)
-    logger.info("Starting Enhanced Multi-Domain RAG System")
-    logger.info("=" * 70)
-
-    if not app_state.available_domains:
-        logger.error("❌ No domains found!")
-        logger.info("Creating a default 'hr' domain...")
-
-        # Create default domain
-        try:
-            on_create_domain("hr", "Human Resources", "HR policies and documents", "hr_collection")
-            app_state.refresh_domains()
-        except:
-            logger.error("Failed to create default domain")
-            exit(1)
-
-    logger.info(f"✅ Found {len(app_state.available_domains)} domains:")
-    for domain in app_state.available_domains:
-        logger.info(f"   - {domain}")
-
-    app = create_ui()
-
-    app.launch(
-        server_name="127.0.0.1",
-        server_port=7860,
-        share=False,
-        debug=True
-    )
+    logger.info("Launching Gradio interface...")
+    demo.launch(server_name="127.0.0.1", server_port=7860, share=False)
