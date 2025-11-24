@@ -47,7 +47,7 @@ Example Usage:
 config_mgr = ConfigManager()
 
 # Load domain configuration
-hr_config = config_mgr.load_domain_config("hr")
+hr_config = config_mgr.load_domain_config("hr_domain")
 
 # Access configuration
 print(hr_config.chunking.strategy)  # "recursive"
@@ -253,7 +253,7 @@ class ConfigManager:
     print(f"Available domains: {domains}")
 
     # Load domain configuration
-    hr_config = config_mgr.load_domain_config("hr")
+    hr_config = config_mgr.load_domain_config("hr_domain")
 
     # Access configuration values
     print(f"Chunking strategy: {hr_config.chunking.strategy}")
@@ -364,7 +364,7 @@ class ConfigManager:
         --------
         List[str]:
             List of domain names (without .yaml extension)
-            Example: ["hr", "finance", "engineering"]
+            Example: ["hr_domain", "finance", "engineering"]
         """
         yaml_files = glob.glob(str(self.domain_dir / "*.yaml"))
         names = [Path(f).stem for f in yaml_files]
@@ -403,7 +403,7 @@ class ConfigManager:
         -----------
         domain_name : str
             Domain name (without .yaml extension)
-            Example: "hr", "finance", "engineering"
+            Example: "hr_domain", "finance", "engineering"
 
         Returns:
         --------
@@ -420,7 +420,7 @@ class ConfigManager:
         Example:
         --------
         config_mgr = ConfigManager()
-        hr_config = config_mgr.load_domain_config("hr")
+        hr_config = config_mgr.load_domain_config("hr_domain")
 
         # Access configuration
         print(hr_config.chunking.strategy)  # "recursive"
@@ -609,7 +609,7 @@ if __name__ == "__main__":
 
     print("""
 # Access nested configuration
-hr_config = config_mgr.load_domain_config("hr")
+hr_config = config_mgr.load_domain_config("hr_domain")
 
 # Chunking configuration
 if hr_config.chunking.strategy == "recursive":

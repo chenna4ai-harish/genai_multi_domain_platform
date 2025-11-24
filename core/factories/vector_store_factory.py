@@ -20,7 +20,7 @@ from typing import Dict, Any
 import logging
 
 # Import interfaces
-from core.interfaces.vector_store_interface import VectorStoreInterface
+from core.interfaces.vectorstore_interface import VectorStoreInterface
 
 # Import IMPLEMENTED vector stores only
 from core.vectorstores.chromadb_store import ChromaDBStore

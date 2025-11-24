@@ -1,6 +1,6 @@
 """
 
-core/interfaces/vector_store_interface.py
+core/interfaces/vectorstore_interface.py
 
 This module defines the abstract interface (contract) for all vector store
 providers in the multi-domain document intelligence platform.

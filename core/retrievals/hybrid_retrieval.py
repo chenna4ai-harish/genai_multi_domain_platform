@@ -124,7 +124,7 @@ from collections import defaultdict
 
 # Import interface and components
 from core.interfaces.retrieval_interface import RetrievalInterface
-from core.interfaces.vector_store_interface import VectorStoreInterface
+from core.interfaces.vectorstore_interface import VectorStoreInterface
 from core.interfaces.embedding_interface import EmbeddingInterface
 from core.retrievals.bm25_retrieval import BM25Retrieval
 

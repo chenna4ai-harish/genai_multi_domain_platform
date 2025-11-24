@@ -16,6 +16,8 @@ chromadb==0.4.18                   # Vector database
 pinecone ==7.3.0           # Pinecone (optional alternative)
 google-generativeai>=0.3.0        # Gemini embeddings (optional)
 
+
+
 # ============================================
 # DOCUMENT PROCESSING
 # ============================================
@@ -41,6 +43,7 @@ PyYAML==6.0.1                     # YAML config files
 numpy==1.24.3                     # Numerical operations
 python-dateutil==2.8.2           # Date utilities
 reportlab>=4.0.0                  # PDF generation (if needed)
+urllib3>=1.24.2,<2.4.0
 
 # ============================================
 # DEVELOPMENT & TESTING

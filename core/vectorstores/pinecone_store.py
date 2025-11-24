@@ -92,7 +92,7 @@ References:
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 from pinecone import Pinecone, ServerlessSpec
-from core.interfaces.vector_store_interface import VectorStoreInterface
+from core.interfaces.vectorstore_interface import VectorStoreInterface
 from models.metadata_models import ChunkMetadata
 import logging
 import time

@@ -65,12 +65,20 @@ References:
 
 """
 
+import sys
+from pathlib import Path
+project_root = Path(__file__).parent.parent  # Go up two levels from config_manager.py
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+
+
 from typing import Dict, Any, Optional
 import logging
 
 # Import interfaces
 from core.interfaces.retrieval_interface import RetrievalInterface
-from core.interfaces.vector_store_interface import VectorStoreInterface
+from core.interfaces.vectorstore_interface import VectorStoreInterface
 from core.interfaces.embedding_interface import EmbeddingInterface
 
 # Import retrieval implementations
