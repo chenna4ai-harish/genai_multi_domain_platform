@@ -1,12 +1,13 @@
 """
+
 core/interfaces/embedding_interface.py
 
-This module defines the abstract interfaces (contract) for all embedding providers
+This module defines the abstract interface (contract) for all embedding providers
 in the multi-domain document intelligence platform.
 
 Purpose:
 --------
-Defines a standard interfaces that ALL embedding implementations must follow.
+Defines a standard interface that ALL embedding implementations must follow.
 This enables swapping between different embedding providers (Sentence-Transformers,
 Google Gemini, OpenAI, etc.) without changing any calling code.
 
@@ -16,9 +17,9 @@ Embeddings are dense vector representations of text that capture semantic meanin
 Similar texts produce similar vectors (measured by cosine similarity).
 
 Example:
-"cat" → [0.2, 0.8, 0.1, ...]  (384 or 768 dimensions)
-"kitten" → [0.21, 0.79, 0.11, ...]  (very similar vector)
-"car" → [-0.5, 0.1, 0.9, ...]  (very different vector)
+"cat" → [0.2, 0.8, 0.1, ...] (384 or 768 dimensions)
+"kitten" → [0.21, 0.79, 0.11, ...] (very similar vector)
+"car" → [-0.5, 0.1, 0.9, ...] (very different vector)
 
 Why Use Abstract Base Classes?
 -------------------------------
@@ -34,7 +35,7 @@ Design Pattern:
 ---------------
 This follows the Strategy Pattern + Adapter Pattern:
 - Strategy: Different embedding algorithms can be swapped
-- Adapter: Wraps different APIs (HuggingFace, Google, OpenAI) into one interfaces
+- Adapter: Wraps different APIs (HuggingFace, Google, OpenAI) into one interface
 
 Example Usage:
 --------------
@@ -44,7 +45,9 @@ embedder: EmbeddingInterface = EmbeddingFactory.create_embedder(config)
 # Caller doesn't care if it's Sentence-Transformers or Gemini!
 texts = ["Hello world", "Python is great"]
 embeddings = embedder.embed_texts(texts)
+
 # Returns: numpy array of shape (2, embedding_dim)
+
 """
 
 from abc import ABC, abstractmethod
@@ -54,7 +57,7 @@ import numpy as np
 
 class EmbeddingInterface(ABC):
     """
-    Abstract base class defining the interfaces for embedding providers.
+    Abstract base class defining the interface for embedding providers.
 
     All embedding implementations (SentenceTransformerEmbeddings,
     GeminiEmbeddings, OpenAIEmbeddings, etc.) MUST inherit from this
@@ -67,6 +70,7 @@ class EmbeddingInterface(ABC):
     2. Handling batching for efficiency
     3. Returning consistent embedding dimensions
     4. Providing model name/version information
+    5. Providing embedding dimension information
 
     Key Concepts:
     -------------
@@ -110,12 +114,12 @@ class EmbeddingInterface(ABC):
     Usage Example:
     --------------
     # Polymorphic usage - works with ANY embedder!
-
     def embed_documents(texts: List[str], embedder: EmbeddingInterface):
         '''Embed documents with ANY embedding provider.'''
         embeddings = embedder.embed_texts(texts)
         model_name = embedder.get_model_name()
-        print(f"Embedded {len(texts)} texts using {model_name}")
+        dimension = embedder.get_embedding_dimension()
+        print(f"Embedded {len(texts)} texts using {model_name} ({dimension}-dim)")
         print(f"Embedding shape: {embeddings.shape}")
         return embeddings
 
@@ -142,7 +146,6 @@ class EmbeddingInterface(ABC):
         texts : List[str]
             List of text strings to embed.
             Can be single sentence or multi-sentence chunks.
-
             Example:
             [
                 "Employee benefits include 15 vacation days.",
@@ -159,11 +162,10 @@ class EmbeddingInterface(ABC):
         --------
         np.ndarray:
             2D numpy array of embeddings with shape (n_texts, embedding_dim).
-
             Example for 3 texts with 384-dim embeddings:
-            array([[0.2, 0.1, -0.3, ..., 0.5],   # Text 1 embedding (384 values)
-                   [0.1, 0.2, -0.1, ..., 0.4],   # Text 2 embedding (384 values)
-                   [0.3, 0.0, -0.2, ..., 0.6]])  # Text 3 embedding (384 values)
+            array([[0.2, 0.1, -0.3, ..., 0.5],  # Text 1 embedding (384 values)
+                   [0.1, 0.2, -0.1, ..., 0.4],  # Text 2 embedding (384 values)
+                   [0.3, 0.0, -0.2, ..., 0.6]]) # Text 3 embedding (384 values)
 
             Shape: (3, 384)
 
@@ -192,7 +194,6 @@ class EmbeddingInterface(ABC):
         2. **Handle Empty Strings**:
            # Option 1: Skip empty strings
            valid_texts = [t for t in texts if t.strip()]
-
            # Option 2: Replace with placeholder
            texts = [t if t.strip() else "[EMPTY]" for t in texts]
 
@@ -280,7 +281,6 @@ class EmbeddingInterface(ABC):
         --------
         str:
             Model name or identifier.
-
             Examples:
             - Sentence-Transformers: "all-MiniLM-L6-v2", "all-mpnet-base-v2"
             - Google Gemini: "models/embedding-001"
@@ -339,6 +339,134 @@ class EmbeddingInterface(ABC):
         """
         pass  # Subclasses MUST implement this method
 
+    @abstractmethod
+    def get_embedding_dimension(self) -> int:
+        """
+        Return the dimension of embeddings produced by this model.
+
+        This is CRITICAL for Phase 2 architecture because:
+        1. Vector stores need dimension to initialize collections/indexes
+        2. Prevents dimension mismatch errors at runtime
+        3. Enables validation of embedding outputs
+        4. Used for capacity planning and memory estimation
+
+        Returns:
+        --------
+        int:
+            Embedding dimension (number of values in each vector).
+            Common dimensions:
+            - 384: all-MiniLM-L6-v2, paraphrase-MiniLM
+            - 768: BERT, MPNet, Gemini, sentence-t5
+            - 1024: RoBERTa-large
+            - 1536: OpenAI text-embedding-ada-002
+            - 3072: OpenAI text-embedding-3-large
+
+        Example Usage:
+        --------------
+        # Get dimension from embedder
+        embedder = SentenceTransformerEmbeddings("all-MiniLM-L6-v2")
+        dimension = embedder.get_embedding_dimension()  # 384
+
+        # Use dimension to initialize vector store
+        vector_store = VectorStoreFactory.create_store(
+            config=vector_store_config,
+            embedding_dimension=dimension,  # Pass dimension here!
+            metadata_fields=["doc_id", "domain"]
+        )
+
+        # Vector store now knows to expect 384-dimensional vectors
+
+        Why This Is Required:
+        ---------------------
+        Most vector databases require the dimension to be specified upfront:
+
+        # Pinecone
+        pinecone.create_index("my-index", dimension=384)  # MUST match embeddings!
+
+        # ChromaDB (validates on insert)
+        collection = client.create_collection("docs", metadata={"dimension": 384})
+
+        # FAISS
+        index = faiss.IndexFlatIP(384)  # Dimension required at creation
+
+        Without this method, you'd have to:
+        - Manually track dimensions in config (error-prone)
+        - Generate a test embedding just to get dimension (wasteful)
+        - Risk dimension mismatch errors at runtime
+
+        Implementation Guidelines:
+        --------------------------
+        The dimension should be:
+        1. Determined during model initialization
+        2. Stored as an instance variable
+        3. Returned by this method
+
+        Implementation Examples:
+        ------------------------
+        # Sentence-Transformers
+        class SentenceTransformerEmbeddings(EmbeddingInterface):
+            def __init__(self, model_name: str):
+                self.model = SentenceTransformer(model_name)
+                self.embedding_dim = self.model.get_sentence_embedding_dimension()
+
+            def get_embedding_dimension(self) -> int:
+                return self.embedding_dim  # 384, 768, etc.
+
+        # Gemini (fixed dimension)
+        class GeminiEmbeddings(EmbeddingInterface):
+            def __init__(self, api_key: str):
+                self.embedding_dim = 768  # Gemini embeddings are always 768-dim
+                genai.configure(api_key=api_key)
+
+            def get_embedding_dimension(self) -> int:
+                return self.embedding_dim  # Always 768
+
+        # OpenAI (model-dependent)
+        class OpenAIEmbeddings(EmbeddingInterface):
+            DIMENSIONS = {
+                "text-embedding-ada-002": 1536,
+                "text-embedding-3-small": 1536,
+                "text-embedding-3-large": 3072
+            }
+
+            def __init__(self, api_key: str, model_name: str):
+                self.model_name = model_name
+                self.embedding_dim = self.DIMENSIONS[model_name]
+
+            def get_embedding_dimension(self) -> int:
+                return self.embedding_dim
+
+        Error Handling:
+        ---------------
+        If dimension cannot be determined, raise a clear error:
+
+        def get_embedding_dimension(self) -> int:
+            if not hasattr(self, 'embedding_dim'):
+                raise RuntimeError(
+                    "Embedding dimension not initialized. "
+                    "Ensure model is loaded before calling this method."
+                )
+            return self.embedding_dim
+
+        Validation:
+        -----------
+        You can validate embeddings match the reported dimension:
+
+        def embed_texts(self, texts: List[str]) -> np.ndarray:
+            embeddings = self.model.encode(texts)
+
+            # Validate dimension
+            expected_dim = self.get_embedding_dimension()
+            actual_dim = embeddings.shape[1]
+            if actual_dim != expected_dim:
+                raise RuntimeError(
+                    f"Dimension mismatch: expected {expected_dim}, got {actual_dim}"
+                )
+
+            return embeddings
+        """
+        pass  # Subclasses MUST implement this method
+
 
 # =============================================================================
 # USAGE NOTES FOR IMPLEMENTERS
@@ -350,27 +478,37 @@ How to Implement a New Embedding Provider:
 
 1. Create a new file: core/embeddings/my_embeddings.py
 
-2. Import the interfaces:
+2. Import the interface:
    from core.interfaces.embedding_interface import EmbeddingInterface
    import numpy as np
 
 3. Create your class inheriting from EmbeddingInterface:
+
    class MyEmbeddings(EmbeddingInterface):
        def __init__(self, api_key: str, model_name: str, **kwargs):
            self.api_key = api_key
            self.model_name = model_name
            self.batch_size = kwargs.get('batch_size', 32)
+
            # Initialize your API client / model here
+           self.client = MyAPIClient(api_key)
+
+           # IMPORTANT: Determine and store dimension
+           self.embedding_dim = self._get_dimension_for_model(model_name)
 
        def embed_texts(self, texts: List[str]) -> np.ndarray:
            # Your implementation using your API/model
-           embeddings = your_api.embed(texts)
+           embeddings = self.client.embed(texts)
            return np.array(embeddings)
 
        def get_model_name(self) -> str:
            return self.model_name
 
+       def get_embedding_dimension(self) -> int:
+           return self.embedding_dim  # MUST implement this!
+
 4. Register in factory: core/factories/embedding_factory.py
+
    elif config.provider == "my_provider":
        return MyEmbeddings(
            api_key=os.getenv("MY_API_KEY"),

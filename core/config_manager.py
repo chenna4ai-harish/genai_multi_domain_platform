@@ -1,516 +1,551 @@
 """
+
 core/config_manager.py
 
-This module implements the configuration management system for the multi-domain
-document intelligence platform.
+This module implements the Configuration Manager for Phase 2 architecture.
 
-Purpose:
---------
-The ConfigManager is responsible for:
-1. Loading YAML configuration files (global + domain-specific)
-2. Hierarchical merging (domain configs override global defaults)
-3. Validating configurations using Pydantic models
-4. Providing a clean API for accessing domain configurations
+What is the Configuration Manager?
+-----------------------------------
+The ConfigManager is the central configuration loader and validator for the
+Multi-Domain RAG System. It handles:
+- Loading domain-specific configurations from YAML files
+- Merging global defaults with domain overrides
+- Validating configurations against Pydantic schemas
+- Injecting environment variables (e.g., API keys)
+- Supporting configuration templates
 
-This enables the "config-driven" architecture where new domains can be added
-by just creating a YAML file, with no code changes required.
+Phase 2 Configuration Architecture:
+------------------------------------
+configs/
+  ├── global_config.yaml         # Global defaults
+  ├── domains/                   # Domain-specific configs
+  │   ├── hr.yaml
+  │   ├── finance.yaml
+  │   └── engineering.yaml
+  └── templates/                 # Reusable templates
+      ├── dev_template.yaml
+      └── prod_template.yaml
 
-Configuration Hierarchy:
-------------------------
-Global Config (configs/global_config.yaml)
-    ↓ Provides baseline defaults
-Domain Config (configs/domains/hr_domain.yaml)
-    ↓ Overrides global settings
-Merged Config
-    ↓ Validated by Pydantic
-DomainConfig Object
-    ↓ Used by application
+Why Configuration-Driven Design?
+---------------------------------
+1. **No Hardcoded Business Rules**: All behavior controlled by YAML config
+2. **Domain Customization**: Each domain (HR, Finance, etc.) has unique settings
+3. **Easy A/B Testing**: Change strategies via config, no code deployment
+4. **Environment Management**: Dev/staging/prod configurations separate
+5. **Hot Reloading**: Change config without restarting (future enhancement)
+
+Key Features:
+-------------
+- **Pydantic Validation**: Type-safe configuration with automatic validation
+- **Environment Variables**: API keys from ${GEMINI_API_KEY} syntax
+- **Deep Merging**: Domain configs override global defaults recursively
+- **Template Support**: Reusable configuration templates
 
 Example Usage:
 --------------
-# Initialize config manager
-config_mgr = ConfigManager(config_dir="configs")
+# Initialize manager
+config_mgr = ConfigManager()
 
-# Load HR domain configuration
+# Load domain configuration
 hr_config = config_mgr.load_domain_config("hr")
 
-# Access configuration values
-print(hr_config.embeddings.model_name)  # "all-MiniLM-L6-v2"
-print(hr_config.vector_store.provider)   # "chromadb"
+# Access configuration
+print(hr_config.chunking.strategy)  # "recursive"
+print(hr_config.embeddings.provider)  # "sentence_transformers"
 
-# Load a different domain
-finance_config = config_mgr.load_domain_config("finance")
+# Use in service/pipeline
+service = DocumentService(hr_config)
+
+References:
+-----------
+- Phase 2 Configuration: Section 12 (Configuration Management)
+- Pydantic Docs: https://docs.pydantic.dev/
+
 """
 
+import os
+import glob
+import copy
 import yaml
-from pathlib import Path
-from typing import Dict, Any, Optional
-from models.domain_config import DomainConfig
 import logging
+from pathlib import Path
+from typing import Dict, Any, Optional, List
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
-# Configure logging for this module
+# Configure logging
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# PHASE 2 PYDANTIC CONFIGURATION SCHEMAS
+# =============================================================================
+
+class RecursiveChunkingConfig(BaseModel):
+    """Configuration for recursive (fixed-size) chunking strategy."""
+    strategy: str = Field(default="recursive", description="Chunking strategy name")
+    chunk_size: int = Field(default=500, ge=100, le=5000, description="Characters per chunk")
+    overlap: int = Field(default=50, ge=0, le=500, description="Overlap between chunks")
+
+
+class SemanticChunkingConfig(BaseModel):
+    """Configuration for semantic (similarity-based) chunking strategy."""
+    strategy: str = Field(default="semantic", description="Chunking strategy name")
+    similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="Similarity threshold")
+    max_chunk_size: int = Field(default=1000, ge=100, le=5000, description="Maximum chunk size")
+
+
+class ChunkingConfig(BaseModel):
+    """Phase 2 chunking configuration."""
+    strategy: str = Field(..., description="Chunking strategy: recursive or semantic")
+    recursive: Optional[RecursiveChunkingConfig] = Field(default_factory=RecursiveChunkingConfig)
+    semantic: Optional[SemanticChunkingConfig] = Field(default_factory=SemanticChunkingConfig)
+
+    @field_validator('strategy')
+    @classmethod
+    def validate_strategy(cls, v):
+        allowed = ["recursive", "semantic"]
+        if v not in allowed:
+            raise ValueError(f"Invalid chunking strategy: {v}. Allowed: {allowed}")
+        return v
+
+
+class EmbeddingConfig(BaseModel):
+    """Phase 2 embedding configuration."""
+    provider: str = Field(..., description="Embedding provider: sentence_transformers, gemini, openai")
+    model_name: str = Field(..., description="Model name/identifier")
+    device: Optional[str] = Field(default="cpu", description="Device for local models: cpu, cuda, mps")
+    batch_size: Optional[int] = Field(default=32, ge=1, le=1000, description="Batch size for embedding")
+    normalize: Optional[bool] = Field(default=True, description="Normalize embeddings (for sentence_transformers)")
+    api_key: Optional[str] = Field(default=None, description="API key for cloud providers (from env)")
+
+    @field_validator('provider')
+    @classmethod
+    def validate_provider(cls, v):
+        allowed = ["sentence_transformers", "gemini", "openai"]
+        if v not in allowed:
+            raise ValueError(f"Invalid embedding provider: {v}. Allowed: {allowed}")
+        return v
+
+
+class HybridRetrievalConfig(BaseModel):
+    """Configuration for hybrid (dense + sparse) retrieval."""
+    alpha: float = Field(default=0.7, ge=0.0, le=1.0, description="Dense weight (1-alpha = sparse weight)")
+    normalize_scores: bool = Field(default=True, description="Normalize scores before combining")
+
+
+class RetrievalConfig(BaseModel):
+    """Phase 2 retrieval configuration."""
+    strategies: List[str] = Field(default=["hybrid"], description="Enabled retrieval strategies")
+    top_k: int = Field(default=10, ge=1, le=100, description="Default number of results")
+    similarity: str = Field(default="cosine", description="Similarity metric")
+    hybrid: Optional[HybridRetrievalConfig] = Field(default_factory=HybridRetrievalConfig)
+
+    @field_validator('strategies')
+    @classmethod
+    def validate_strategies(cls, v):
+        allowed = ["vector_similarity", "hybrid", "bm25"]
+        for strategy in v:
+            if strategy not in allowed:
+                raise ValueError(f"Invalid retrieval strategy: {strategy}. Allowed: {allowed}")
+        return v
+
+
+class VectorStoreConfig(BaseModel):
+    """Phase 2 vector store configuration."""
+    provider: str = Field(..., description="Vector store provider: chromadb, pinecone, qdrant, faiss")
+    collection_name: str = Field(..., description="Collection/index name")
+    index_type: Optional[str] = Field(default="hnsw", description="Index algorithm")
+    persist_directory: Optional[str] = Field(default="./data/chroma_db", description="ChromaDB persistence directory")
+    cloud: Optional[str] = Field(default="aws", description="Pinecone cloud provider")
+    region: Optional[str] = Field(default="us-east-1", description="Pinecone region")
+    api_key: Optional[str] = Field(default=None, description="API key for cloud providers")
+    dimension: Optional[int] = Field(default=None, description="Embedding dimension (auto-detected)")
+
+    @field_validator('provider')
+    @classmethod
+    def validate_provider(cls, v):
+        allowed = ["chromadb", "pinecone", "qdrant", "faiss"]
+        if v not in allowed:
+            raise ValueError(f"Invalid vector store provider: {v}. Allowed: {allowed}")
+        return v
+
+
+class SecurityConfig(BaseModel):
+    """Phase 2 security configuration."""
+    allowed_file_types: List[str] = Field(default=["pdf", "docx", "txt"], description="Allowed file extensions")
+    max_file_size_mb: int = Field(default=20, ge=1, le=100, description="Maximum file size in MB")
+    require_authentication: bool = Field(default=False, description="Require user authentication")
+
+
+class MetadataConfig(BaseModel):
+    """Phase 2 metadata configuration."""
+    track_versions: bool = Field(default=True, description="Track document versions")
+    enable_deprecation: bool = Field(default=True, description="Enable deprecation workflow")
+    compute_file_hash: bool = Field(default=True, description="Compute file hashes for integrity")
+    extract_page_numbers: bool = Field(default=True, description="Extract page numbers from PDFs")
+    required_fields: List[str] = Field(
+        default=["doc_id", "title", "domain", "doc_type", "uploader_id"],
+        description="Required metadata fields for upload"
+    )
+
+
+class DomainConfig(BaseModel):
+    """
+    Complete Phase 2 domain configuration schema.
+
+    This is the root configuration model that all domain configs must conform to.
+    Validates all required fields and sub-configurations.
+    """
+    # Identity
+    domain_id: str = Field(..., description="Unique domain identifier")
+    name: str = Field(..., description="Human-readable domain name")
+    description: Optional[str] = Field(default=None, description="Domain description")
+
+    # Component configurations (CRITICAL: Match field names used in code)
+    chunking: ChunkingConfig = Field(..., description="Chunking configuration")
+    embeddings: EmbeddingConfig = Field(..., description="Embedding configuration")
+    retrieval: RetrievalConfig = Field(..., description="Retrieval configuration")
+    vector_store: VectorStoreConfig = Field(..., description="Vector store configuration")
+
+    # Optional configurations
+    security: Optional[SecurityConfig] = Field(default_factory=SecurityConfig)
+    metadata: Optional[MetadataConfig] = Field(default_factory=MetadataConfig)
+
+    class Config:
+        # Allow extra fields for future extensibility
+        extra = "allow"
+
+
+# =============================================================================
+# CONFIGURATION MANAGER IMPLEMENTATION
+# =============================================================================
+
 class ConfigManager:
     """
-    Manages hierarchical configuration loading and validation.
+    Central configuration manager for Phase 2 architecture.
 
-    This class implements a two-tier configuration system:
-    1. Global config (configs/global_config.yaml) - baseline defaults
-    2. Domain configs (configs/domains/*.yaml) - domain-specific overrides
+    Responsibilities:
+    - Load and validate domain configurations
+    - Merge global defaults with domain overrides
+    - Inject environment variables
+    - Support configuration templates
+    - Provide configuration discovery
 
-    Key Features:
-    -------------
-    - Hierarchical merging: Domain configs override global defaults
-    - Pydantic validation: Ensures all configs are valid before use
-    - Caching: Loaded configs are cached to avoid re-parsing YAML
-    - Error handling: Clear error messages for missing/invalid configs
-
-    Design Benefits:
-    ----------------
-    - Add new domains without code changes (just add YAML file)
-    - Share common settings across domains (via global config)
-    - Override specific settings per domain (via domain config)
-    - Type safety and validation (via Pydantic)
-
-    Example Directory Structure:
-    ----------------------------
+    Directory Structure:
+    --------------------
     configs/
-    ├── global_config.yaml          # Baseline defaults
-    └── domains/
-        ├── hr_domain.yaml          # HR overrides
-        ├── finance_domain.yaml     # Finance overrides
-        └── engineering_domain.yaml # Engineering overrides
+      ├── global_config.yaml       # Global defaults (all domains inherit)
+      ├── domains/                 # Domain-specific configs
+      │   ├── hr.yaml              # HR domain configuration
+      │   ├── finance.yaml         # Finance domain configuration
+      │   └── engineering.yaml     # Engineering domain configuration
+      └── templates/               # Reusable templates
+          ├── dev_template.yaml    # Development environment template
+          └── prod_template.yaml   # Production environment template
+
+    Example:
+    --------
+    # Initialize manager
+    config_mgr = ConfigManager()
+
+    # List available domains
+    domains = config_mgr.get_all_domain_names()
+    print(f"Available domains: {domains}")
+
+    # Load domain configuration
+    hr_config = config_mgr.load_domain_config("hr")
+
+    # Access configuration values
+    print(f"Chunking strategy: {hr_config.chunking.strategy}")
+    print(f"Embedding provider: {hr_config.embeddings.provider}")
+    print(f"Vector store: {hr_config.vector_store.provider}")
     """
 
-    def __init__(self, config_dir: str = "configs"):
+    def __init__(
+            self,
+            config_dir: str = "configs",
+            domain_dir: str = "domains",
+            template_dir: str = "templates",
+            global_config_file: str = "global_config.yaml"
+    ):
         """
-        Initialize the ConfigManager.
+        Initialize ConfigManager.
 
         Parameters:
         -----------
-        config_dir : str, optional
-            Root directory containing configuration files.
-            Default: "configs"
-
-            Expected structure:
-            config_dir/
-            ├── global_config.yaml
-            └── domains/
-                └── *.yaml
-
-        Raises:
-        -------
-        FileNotFoundError:
-            If config_dir does not exist
-
-        Example:
-        --------
-        # Use default config directory
-        config_mgr = ConfigManager()
-
-        # Use custom config directory
-        config_mgr = ConfigManager(config_dir="/app/configs")
+        config_dir : str
+            Base configuration directory
+        domain_dir : str
+            Subdirectory for domain configs
+        template_dir : str
+            Subdirectory for template configs
+        global_config_file : str
+            Global configuration filename
         """
         self.config_dir = Path(config_dir)
+        self.domain_dir = self.config_dir / domain_dir
+        self.template_dir = self.config_dir / template_dir
+        self.global_config_file = self.config_dir / global_config_file
 
-        # Validate that config directory exists
-        if not self.config_dir.exists():
-            raise FileNotFoundError(
-                f"Configuration directory not found: {self.config_dir}\n"
-                f"Please create the directory and add config files."
-            )
+        # Create directories if they don't exist
+        self.domain_dir.mkdir(parents=True, exist_ok=True)
+        self.template_dir.mkdir(parents=True, exist_ok=True)
 
-        # Load global configuration (baseline defaults)
-        self.global_config = self._load_global_config()
+        # Load global config once (merged into all domain configs)
+        self.global_config = self._load_yaml(self.global_config_file) or {}
+        self._inject_env_vars(self.global_config)
 
-        # Cache for loaded domain configs (avoid re-parsing YAML)
-        # Format: {"hr": DomainConfig(...), "finance": DomainConfig(...)}
-        self._domain_config_cache: Dict[str, DomainConfig] = {}
+        logger.info(
+            f"ConfigManager initialized:\n"
+            f"  Config dir: {self.config_dir.absolute()}\n"
+            f"  Global config: {self.global_config_file.name}\n"
+            f"  Domains dir: {self.domain_dir}\n"
+            f"  Templates dir: {self.template_dir}"
+        )
 
-        logger.info(f"ConfigManager initialized with config_dir: {self.config_dir}")
+    @staticmethod
+    def _load_yaml(path: Path) -> Optional[Dict]:
+        """Load YAML file and return dict."""
+        if not path.exists():
+            logger.warning(f"Config file not found: {path}")
+            return None
 
-    def _load_global_config(self) -> Dict[str, Any]:
+        try:
+            with open(path, "r") as f:
+                data = yaml.safe_load(f)
+                logger.debug(f"Loaded YAML from {path}")
+                return data
+        except Exception as e:
+            logger.error(f"Failed to load YAML from {path}: {e}")
+            raise
+
+    def _inject_env_vars(self, config: Dict) -> None:
         """
-        Load baseline default configuration from global_config.yaml.
+        Recursively inject environment variables.
 
-        The global config provides default values that are shared across all
-        domains. Domain configs can override these defaults.
+        Replaces ${ENV_VAR} syntax with actual environment variable values.
+        Example: api_key: ${GEMINI_API_KEY} → api_key: "actual-key-value"
+        """
+        if isinstance(config, dict):
+            for k, v in config.items():
+                if isinstance(v, str) and v.startswith("${") and v.endswith("}"):
+                    env_var = v[2:-1]  # Extract ENV_VAR from ${ENV_VAR}
+                    env_value = os.getenv(env_var)
+                    if env_value:
+                        config[k] = env_value
+                        logger.debug(f"Injected env var: {env_var}")
+                    else:
+                        logger.warning(f"Environment variable not set: {env_var}")
+                else:
+                    self._inject_env_vars(v)
+        elif isinstance(config, list):
+            for entry in config:
+                self._inject_env_vars(entry)
+
+    @staticmethod
+    def _merge_dicts(base: Dict, override: Dict) -> None:
+        """
+        Deep merge override into base dictionary.
+
+        Recursively merges nested dictionaries. Non-dict values in override
+        completely replace values in base.
+        """
+        for k, v in override.items():
+            if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+                ConfigManager._merge_dicts(base[k], v)
+            else:
+                base[k] = v
+
+    def get_all_domain_names(self) -> List[str]:
+        """
+        Get list of all available domain names.
 
         Returns:
         --------
-        dict:
-            Dictionary containing global configuration.
-            Returns empty dict {} if global_config.yaml doesn't exist.
-
-        Example global_config.yaml:
-        ---------------------------
-        embeddings:
-          provider: "sentence_transformers"
-          model_name: "all-MiniLM-L6-v2"
-          device: "cpu"
-          batch_size: 32
-
-        chunking:
-          strategy: "recursive"
-          recursive:
-            chunk_size: 500
-            overlap: 50
-
-        retrieval:
-          strategy: "hybrid"
-          alpha: 0.7
-          top_k: 10
-
-        Notes:
-        ------
-        - It's okay if global_config.yaml doesn't exist
-        - Each domain MUST provide complete config (or merge will fail validation)
-        - Global config is useful for DRY (Don't Repeat Yourself) principle
+        List[str]:
+            List of domain names (without .yaml extension)
+            Example: ["hr", "finance", "engineering"]
         """
-        global_path = self.config_dir / "global_config.yaml"
+        yaml_files = glob.glob(str(self.domain_dir / "*.yaml"))
+        names = [Path(f).stem for f in yaml_files]
+        logger.debug(f"Found {len(names)} domain configs: {names}")
+        return names
 
-        # If global config doesn't exist, return empty dict (no defaults)
-        if not global_path.exists():
-            logger.warning(
-                f"Global config not found: {global_path}\n"
-                f"Domain configs must provide all required fields."
-            )
-            return {}
-
-        try:
-            with open(global_path, 'r', encoding='utf-8') as f:
-                config_data = yaml.safe_load(f)
-
-            # Handle empty YAML file (None is returned by safe_load)
-            if config_data is None:
-                logger.warning(f"Global config is empty: {global_path}")
-                return {}
-
-            logger.info(f"Loaded global config from: {global_path}")
-            return config_data
-
-        except yaml.YAMLError as e:
-            # YAML syntax error (e.g., invalid indentation, unclosed quotes)
-            logger.error(f"YAML parsing error in {global_path}: {e}")
-            raise ValueError(
-                f"Invalid YAML syntax in global config: {global_path}\n"
-                f"Error: {e}\n"
-                f"Please fix the YAML syntax and try again."
-            )
-        except Exception as e:
-            # Other errors (e.g., permission denied, encoding issues)
-            logger.error(f"Error loading global config: {e}")
-            raise
-
-    def load_domain_config(self, domain_name: str, use_cache: bool = True) -> DomainConfig:
+    def get_all_template_names(self) -> List[str]:
         """
-        Load and validate domain-specific configuration.
+        Get list of all available template names.
 
-        This method:
-        1. Checks cache (if use_cache=True)
-        2. Loads domain YAML file (configs/domains/{domain_name}_domain.yaml)
-        3. Merges with global config (domain overrides global)
-        4. Validates merged config using Pydantic (DomainConfig model)
-        5. Caches result for future calls
+        Returns:
+        --------
+        List[str]:
+            List of template names (without .yaml extension)
+            Example: ["dev_template", "prod_template"]
+        """
+        yaml_files = glob.glob(str(self.template_dir / "*.yaml"))
+        names = [Path(f).stem for f in yaml_files]
+        logger.debug(f"Found {len(names)} template configs: {names}")
+        return names
+
+    def load_domain_config(self, domain_name: str) -> DomainConfig:
+        """
+        Load and validate domain configuration.
+
+        Workflow:
+        ---------
+        1. Load global config (defaults)
+        2. Load domain-specific config
+        3. Deep merge: global <- domain (domain overrides global)
+        4. Inject environment variables (API keys, etc.)
+        5. Validate against Pydantic schema
+        6. Return validated DomainConfig object
 
         Parameters:
         -----------
         domain_name : str
-            Internal name of the domain (lowercase, no spaces).
+            Domain name (without .yaml extension)
             Example: "hr", "finance", "engineering"
-
-            This will load: configs/domains/{domain_name}_domain.yaml
-
-        use_cache : bool, optional
-            Whether to use cached config if available.
-            Default: True (recommended for performance)
-            Set to False to force reload (useful for config updates)
 
         Returns:
         --------
         DomainConfig:
-            Validated domain configuration object (Pydantic model).
-            Safe to use - all fields are validated and type-checked.
+            Validated domain configuration object
 
         Raises:
         -------
         FileNotFoundError:
             If domain config file doesn't exist
-        ValueError:
-            If YAML syntax is invalid or config fails Pydantic validation
-
-        Example:
-        --------
-        # Load HR domain config
-        hr_config = config_mgr.load_domain_config("hr")
-
-        # Access configuration values (type-safe!)
-        print(hr_config.name)                      # "hr"
-        print(hr_config.display_name)              # "Human Resources"
-        print(hr_config.embeddings.provider)       # "sentence_transformers"
-        print(hr_config.embeddings.model_name)     # "all-MiniLM-L6-v2"
-        print(hr_config.vector_store.provider)     # "chromadb"
-        print(hr_config.chunking.strategy)         # "recursive"
-        print(hr_config.retrieval.strategy)        # "hybrid"
-
-        # Force reload (ignore cache) - useful after config changes
-        hr_config_fresh = config_mgr.load_domain_config("hr", use_cache=False)
-        """
-        # Check cache first (performance optimization)
-        if use_cache and domain_name in self._domain_config_cache:
-            logger.debug(f"Using cached config for domain: {domain_name}")
-            return self._domain_config_cache[domain_name]
-
-        # Construct path to domain config file
-        # Format: configs/domains/{domain_name}_domain.yaml
-        domain_path = self.config_dir / "domains" / f"{domain_name}_domain.yaml"
-
-        # Validate that domain config file exists
-        if not domain_path.exists():
-            raise FileNotFoundError(
-                f"Domain config not found: {domain_path}\n"
-                f"Please create the file with required configuration.\n"
-                f"Example: cp configs/domains/hr_domain.yaml {domain_path}"
-            )
-
-        try:
-            # Load domain YAML file
-            logger.info(f"Loading domain config: {domain_path}")
-            with open(domain_path, 'r', encoding='utf-8') as f:
-                domain_data = yaml.safe_load(f)
-
-            # Handle empty YAML file
-            if domain_data is None:
-                raise ValueError(
-                    f"Domain config is empty: {domain_path}\n"
-                    f"Please add required configuration fields."
-                )
-
-            # Merge with global config (domain overrides global)
-            merged_config = self._merge_configs(self.global_config, domain_data)
-
-            logger.debug(f"Merged config for domain '{domain_name}': {merged_config.keys()}")
-
-            # Validate merged config using Pydantic
-            # This ensures all required fields are present and types are correct
-            domain_config = DomainConfig(**merged_config)
-
-            # Cache for future use
-            self._domain_config_cache[domain_name] = domain_config
-
-            logger.info(
-                f"Successfully loaded and validated config for domain: {domain_name}\n"
-                f"  - Embedding provider: {domain_config.embeddings.provider}\n"
-                f"  - Vector store: {domain_config.vector_store.provider}\n"
-                f"  - Chunking strategy: {domain_config.chunking.strategy}\n"
-                f"  - Retrieval strategy: {domain_config.retrieval.strategy}"
-            )
-
-            return domain_config
-
-        except yaml.YAMLError as e:
-            # YAML syntax error
-            logger.error(f"YAML parsing error in {domain_path}: {e}")
-            raise ValueError(
-                f"Invalid YAML syntax in domain config: {domain_path}\n"
-                f"Error: {e}\n"
-                f"Please fix the YAML syntax and try again."
-            )
-        except Exception as e:
-            # Pydantic validation error or other issues
-            logger.error(f"Error loading domain config '{domain_name}': {e}")
-            raise
-
-    def _merge_configs(self, global_cfg: Dict[str, Any],
-                       domain_cfg: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Hierarchically merge global and domain configurations.
-
-        Merge Strategy:
-        ---------------
-        - Domain config takes precedence over global config
-        - Nested dictionaries are deep-merged (recursive)
-        - Domain can override specific nested keys without redefining entire sections
-
-        Example:
-        --------
-        Global config:
-        embeddings:
-          provider: "sentence_transformers"
-          model_name: "all-MiniLM-L6-v2"
-          device: "cpu"
-          batch_size: 32
-
-        Domain config:
-        embeddings:
-          model_name: "all-mpnet-base-v2"  # Override only this field
-          device: "cuda"                    # Override only this field
-
-        Merged result:
-        embeddings:
-          provider: "sentence_transformers"  # From global (inherited)
-          model_name: "all-mpnet-base-v2"    # From domain (overridden)
-          device: "cuda"                      # From domain (overridden)
-          batch_size: 32                      # From global (inherited)
-
-        Parameters:
-        -----------
-        global_cfg : dict
-            Global configuration (baseline defaults)
-        domain_cfg : dict
-            Domain-specific configuration (overrides)
-
-        Returns:
-        --------
-        dict:
-            Merged configuration (domain overrides global)
-
-        Notes:
-        ------
-        This is a SHALLOW merge at the top level. For deep merging of nested
-        dicts, consider using libraries like:
-        - deepmerge: https://pypi.org/project/deepmerge/
-        - hiyapyco: https://github.com/zerwes/hiyapyco
-
-        The current implementation is simple and sufficient for most use cases
-        where domain configs completely override top-level sections.
-        """
-        # Start with a copy of global config (don't modify original)
-        merged = global_cfg.copy()
-
-        # Override with domain config (domain takes precedence)
-        # Note: This is a shallow merge (top-level keys only)
-        # If you need deep merge for nested dicts, use deepmerge library
-        merged.update(domain_cfg)
-
-        logger.debug(
-            f"Merged config: {len(global_cfg)} global keys + "
-            f"{len(domain_cfg)} domain keys = {len(merged)} total keys"
-        )
-
-        return merged
-
-    def get_all_domain_names(self) -> list[str]:
-        """
-        Get list of all available domain names.
-
-        Scans the configs/domains/ directory for *_domain.yaml files and
-        extracts the domain names.
-
-        Returns:
-        --------
-        list[str]:
-            List of domain names (without "_domain.yaml" suffix).
-            Example: ["hr", "finance", "engineering", "legal"]
+        ValidationError:
+            If configuration is invalid
 
         Example:
         --------
         config_mgr = ConfigManager()
-        domains = config_mgr.get_all_domain_names()
-        print(f"Available domains: {domains}")
-        # Output: Available domains: ['hr', 'finance', 'engineering']
+        hr_config = config_mgr.load_domain_config("hr")
 
-        # Load configs for all domains
-        for domain in domains:
-            config = config_mgr.load_domain_config(domain)
-            print(f"{domain}: {config.display_name}")
-
-        Use Case:
-        ---------
-        - Populate domain dropdown in UI
-        - Bulk operations (reindex all domains)
-        - Admin dashboard (show all configured domains)
+        # Access configuration
+        print(hr_config.chunking.strategy)  # "recursive"
+        print(hr_config.embeddings.provider)  # "sentence_transformers"
         """
-        domains_dir = self.config_dir / "domains"
+        logger.info(f"Loading domain config: {domain_name}")
 
-        if not domains_dir.exists():
-            logger.warning(f"Domains directory not found: {domains_dir}")
-            return []
+        # Load domain config
+        domain_file = self.domain_dir / f"{domain_name}.yaml"
+        if not domain_file.exists():
+            raise FileNotFoundError(
+                f"Domain config not found: {domain_file}\n"
+                f"Available domains: {self.get_all_domain_names()}"
+            )
 
-        # Find all *_domain.yaml files
-        domain_files = domains_dir.glob("*_domain.yaml")
+        domain_conf = self._load_yaml(domain_file) or {}
 
-        # Extract domain names (remove "_domain.yaml" suffix)
-        # Example: "hr_domain.yaml" → "hr"
-        domain_names = [
-            f.stem.replace("_domain", "")  # stem = filename without extension
-            for f in domain_files
-        ]
+        # Merge: global <- domain (domain overrides global)
+        merged = copy.deepcopy(self.global_config)
+        self._merge_dicts(merged, domain_conf)
 
-        logger.info(f"Found {len(domain_names)} domain(s): {domain_names}")
-        return sorted(domain_names)
+        # Inject environment variables
+        self._inject_env_vars(merged)
 
-    def reload_domain_config(self, domain_name: str) -> DomainConfig:
+        # Add domain_id if not present
+        if 'domain_id' not in merged:
+            merged['domain_id'] = domain_name
+
+        # Validate and convert to Pydantic model
+        try:
+            config = DomainConfig(**merged)
+            logger.info(
+                f"✅ Domain config loaded and validated: {domain_name}\n"
+                f"   Chunking: {config.chunking.strategy}\n"
+                f"   Embeddings: {config.embeddings.provider}\n"
+                f"   Vector Store: {config.vector_store.provider}\n"
+                f"   Retrieval: {', '.join(config.retrieval.strategies)}"
+            )
+            return config
+
+        except ValidationError as e:
+            logger.error(f"Config validation failed for domain '{domain_name}':\n{e}")
+            raise
+
+    def load_template_config(self, template_name: str) -> DomainConfig:
         """
-        Force reload of a domain configuration (bypass cache).
+        Load and validate template configuration.
 
-        Useful when:
-        - Config file was updated
-        - Testing different configurations
-        - Hot-reloading in development
+        Templates are reusable configurations (e.g., dev, prod environments).
 
         Parameters:
         -----------
-        domain_name : str
-            Name of domain to reload
+        template_name : str
+            Template name (without .yaml extension)
 
         Returns:
         --------
         DomainConfig:
-            Freshly loaded and validated domain configuration
-
-        Example:
-        --------
-        # Initial load
-        hr_config = config_mgr.load_domain_config("hr")
-        print(hr_config.embeddings.model_name)  # "all-MiniLM-L6-v2"
-
-        # User edits hr_domain.yaml and changes model_name to "all-mpnet-base-v2"
-
-        # Reload to pick up changes
-        hr_config = config_mgr.reload_domain_config("hr")
-        print(hr_config.embeddings.model_name)  # "all-mpnet-base-v2"
+            Validated template configuration
         """
-        logger.info(f"Force reloading config for domain: {domain_name}")
+        logger.info(f"Loading template config: {template_name}")
 
-        # Clear from cache
-        if domain_name in self._domain_config_cache:
-            del self._domain_config_cache[domain_name]
+        # Load template config
+        template_file = self.template_dir / f"{template_name}.yaml"
+        if not template_file.exists():
+            raise FileNotFoundError(
+                f"Template config not found: {template_file}\n"
+                f"Available templates: {self.get_all_template_names()}"
+            )
 
-        # Load fresh (use_cache=False)
-        return self.load_domain_config(domain_name, use_cache=False)
+        template_conf = self._load_yaml(template_file) or {}
 
-    def clear_cache(self) -> None:
+        # Merge: global <- template
+        merged = copy.deepcopy(self.global_config)
+        self._merge_dicts(merged, template_conf)
+
+        # Inject environment variables
+        self._inject_env_vars(merged)
+
+        # Add domain_id if not present
+        if 'domain_id' not in merged:
+            merged['domain_id'] = template_name
+
+        # Validate
+        try:
+            return DomainConfig(**merged)
+        except ValidationError as e:
+            logger.error(f"Template validation failed for '{template_name}':\n{e}")
+            raise
+
+    def save_domain_config(self, domain_name: str, config: Dict) -> None:
         """
-        Clear the entire domain config cache.
+        Save domain configuration to YAML file.
 
-        Forces all subsequent load_domain_config() calls to reload from disk.
-
-        Use Case:
-        ---------
-        - After bulk config updates
-        - Testing/development
-        - When you want to ensure fresh configs
-
-        Example:
-        --------
-        # Load some configs (they get cached)
-        config_mgr.load_domain_config("hr")
-        config_mgr.load_domain_config("finance")
-
-        # User edits multiple config files
-
-        # Clear cache to force reload
-        config_mgr.clear_cache()
-
-        # Next loads will read from disk
-        hr_config = config_mgr.load_domain_config("hr")  # Fresh load
+        Parameters:
+        -----------
+        domain_name : str
+            Domain name
+        config : Dict
+            Configuration dictionary to save
         """
-        cache_size = len(self._domain_config_cache)
-        self._domain_config_cache.clear()
-        logger.info(f"Cleared config cache ({cache_size} domain(s))")
+        domain_file = self.domain_dir / f"{domain_name}.yaml"
+
+        with open(domain_file, "w") as f:
+            yaml.safe_dump(config, f, sort_keys=False, default_flow_style=False)
+
+        logger.info(f"Saved domain config: {domain_file}")
+
+    def save_template_config(self, template_name: str, config: Dict) -> None:
+        """
+        Save template configuration to YAML file.
+
+        Parameters:
+        -----------
+        template_name : str
+            Template name
+        config : Dict
+            Configuration dictionary to save
+        """
+        template_file = self.template_dir / f"{template_name}.yaml"
+
+        with open(template_file, "w") as f:
+            yaml.safe_dump(config, f, sort_keys=False, default_flow_style=False)
+
+        logger.info(f"Saved template config: {template_file}")
 
 
 # =============================================================================
@@ -520,81 +555,79 @@ class ConfigManager:
 if __name__ == "__main__":
     """
     Demonstration of ConfigManager usage.
-    Run this file directly to see examples: python core/config_manager.py
+    Run: python core/config_manager.py
     """
-
-    # Configure logging to see debug messages
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
     print("=" * 70)
     print("ConfigManager Usage Examples")
     print("=" * 70)
 
-    try:
-        # Example 1: Initialize ConfigManager
-        print("\n1. Initializing ConfigManager...")
-        config_mgr = ConfigManager(config_dir="configs")
-        print("✅ ConfigManager initialized successfully!")
+    # Example 1: Initialize ConfigManager
+    print("\n1. Initialize ConfigManager")
+    print("-" * 70)
 
-        # Example 2: Get all available domains
-        print("\n2. Getting all available domains...")
-        domains = config_mgr.get_all_domain_names()
-        print(f"✅ Found domains: {domains}")
+    config_mgr = ConfigManager()
 
-        # Example 3: Load HR domain config
-        print("\n3. Loading HR domain configuration...")
-        hr_config = config_mgr.load_domain_config("hr")
-        print(f"✅ Loaded HR config:")
-        print(f"   - Display Name: {hr_config.display_name}")
-        print(f"   - Description: {hr_config.description}")
-        print(f"   - Embedding Provider: {hr_config.embeddings.provider}")
-        print(f"   - Embedding Model: {hr_config.embeddings.model_name}")
-        print(f"   - Vector Store: {hr_config.vector_store.provider}")
-        print(f"   - Chunking Strategy: {hr_config.chunking.strategy}")
-        print(f"   - Retrieval Strategy: {hr_config.retrieval.strategy}")
+    # Example 2: List available configurations
+    print("\n2. Discover Available Configurations")
+    print("-" * 70)
 
-        # Example 4: Load multiple domains
-        print("\n4. Loading multiple domains...")
-        for domain_name in domains[:3]:  # Load first 3 domains
+    domains = config_mgr.get_all_domain_names()
+    templates = config_mgr.get_all_template_names()
+
+    print(f"Available domains: {domains}")
+    print(f"Available templates: {templates}")
+
+    # Example 3: Load domain configuration
+    print("\n3. Load Domain Configuration")
+    print("-" * 70)
+
+    if domains:
+        domain_name = domains[0]
+        try:
             config = config_mgr.load_domain_config(domain_name)
-            print(f"✅ {config.display_name}: {config.embeddings.provider} + {config.vector_store.provider}")
 
-        # Example 5: Demonstrate caching
-        print("\n5. Demonstrating config caching...")
-        print("   First load (from disk):")
-        hr_config_1 = config_mgr.load_domain_config("hr", use_cache=False)
-        print(f"   - Loaded: {hr_config_1.name}")
+            print(f"\nDomain: {config.domain_id}")
+            print(f"Name: {config.name}")
+            print(f"Chunking strategy: {config.chunking.strategy}")
+            print(f"Embedding provider: {config.embeddings.provider}")
+            print(f"Vector store: {config.vector_store.provider}")
+            print(f"Retrieval strategies: {config.retrieval.strategies}")
 
-        print("   Second load (from cache):")
-        hr_config_2 = config_mgr.load_domain_config("hr", use_cache=True)
-        print(f"   - Loaded: {hr_config_2.name}")
-        print(f"   - Same object? {hr_config_1 is hr_config_2}")
+        except FileNotFoundError as e:
+            print(f"⚠️  No domain configs found. Create one in {config_mgr.domain_dir}/")
+        except ValidationError as e:
+            print(f"❌ Validation error:\n{e}")
+    else:
+        print("⚠️  No domain configurations found")
+        print(f"Create configs in: {config_mgr.domain_dir}/")
 
-        # Example 6: Clear cache
-        print("\n6. Clearing config cache...")
-        config_mgr.clear_cache()
-        print("✅ Cache cleared!")
+    # Example 4: Configuration access patterns
+    print("\n4. Configuration Access Patterns")
+    print("-" * 70)
 
-        # Example 7: Reload domain config
-        print("\n7. Reloading domain config...")
-        hr_config_fresh = config_mgr.reload_domain_config("hr")
-        print(f"✅ Reloaded: {hr_config_fresh.name}")
+    print("""
+# Access nested configuration
+hr_config = config_mgr.load_domain_config("hr")
 
-    except FileNotFoundError as e:
-        print(f"\n❌ Error: {e}")
-        print("\nPlease ensure configs/ directory exists with:")
-        print("  - configs/global_config.yaml (optional)")
-        print("  - configs/domains/hr_domain.yaml (required)")
+# Chunking configuration
+if hr_config.chunking.strategy == "recursive":
+    chunk_size = hr_config.chunking.recursive.chunk_size
+    overlap = hr_config.chunking.recursive.overlap
 
-    except ValueError as e:
-        print(f"\n❌ Validation Error: {e}")
-        print("\nPlease check your YAML syntax and config structure.")
+# Embedding configuration
+provider = hr_config.embeddings.provider
+model_name = hr_config.embeddings.model_name
 
-    except Exception as e:
-        print(f"\n❌ Unexpected Error: {e}")
+# Vector store configuration
+vector_store_provider = hr_config.vector_store.provider
+collection_name = hr_config.vector_store.collection_name
+
+# Security configuration
+allowed_types = hr_config.security.allowed_file_types
+max_size = hr_config.security.max_file_size_mb
+    """)
 
     print("\n" + "=" * 70)
     print("ConfigManager examples completed!")

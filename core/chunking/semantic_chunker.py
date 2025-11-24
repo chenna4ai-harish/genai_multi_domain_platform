@@ -1,4 +1,5 @@
 """
+
 core/chunking/semantic_chunker.py
 
 This module implements the Semantic Chunking strategy.
@@ -26,10 +27,10 @@ The weather is nice today. It's sunny outside."
 
 Semantic chunks (threshold=0.7):
 Chunk 1: "Python is a programming language. It's easy to learn. Python has great libraries."
-         (High similarity - all about Python)
+(High similarity - all about Python)
 
 Chunk 2: "The weather is nice today. It's sunny outside."
-         (High similarity - both about weather, but different topic from Chunk 1)
+(High similarity - both about weather, but different topic from Chunk 1)
 
 When to Use Semantic Chunking:
 -------------------------------
@@ -37,7 +38,6 @@ When to Use Semantic Chunking:
 ✅ Documents with clear section boundaries
 ✅ When coherence matters more than size uniformity
 ✅ Academic papers, research documents
-
 ❌ Very long documents (slow due to embedding computation)
 ❌ When processing speed is critical
 ❌ Documents without clear topical structure
@@ -55,6 +55,7 @@ Disadvantages:
 - Variable chunk sizes (harder to predict token usage)
 - Higher memory footprint
 - Requires embedding model loaded in memory
+
 """
 
 from typing import List, Tuple
@@ -135,7 +136,6 @@ class SemanticChunker(ChunkerInterface):
         -----------
         config : SemanticChunkingConfig
             Configuration with similarity_threshold and max_chunk_size
-
         embedding_model_name : str
             Name of the embedding model (stored in metadata)
 
@@ -153,10 +153,64 @@ class SemanticChunker(ChunkerInterface):
         # Using all-MiniLM-L6-v2: lightweight (80MB), fast, good quality
         logger.info("Loading sentence embedding model for semantic chunking...")
         self.model = SentenceTransformer('all-MiniLM-L6-v2')
+
         logger.info(
             f"Initialized SemanticChunker: threshold={self.similarity_threshold}, "
             f"max_size={self.max_chunk_size}, model={self.embedding_model_name}"
         )
+
+    def get_strategy_name(self) -> str:
+        """
+        Return the name of this chunking strategy.
+
+        Required by ChunkingInterface.
+
+        Returns:
+        --------
+        str:
+            Strategy name: "semantic"
+        """
+        return "semantic"
+
+    def chunk(self, text: str, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Chunk text by semantic similarity (Phase 2 interface).
+
+        This method implements the ChunkingInterface.chunk() signature.
+
+        Parameters:
+        -----------
+        text : str
+            Text to chunk
+        metadata : Dict[str, Any]
+            Metadata dict with required fields
+
+        Returns:
+        --------
+        List[Dict[str, Any]]:
+            List of dicts with 'text' and 'metadata' keys
+        """
+        # Call the existing chunk_text method
+        chunk_metadata_list = self.chunk_text(
+            text=text,
+            doc_id=metadata.get('doc_id', 'unknown'),
+            domain=metadata.get('domain', 'unknown'),
+            source_file_path=metadata.get('source_file_path', ''),
+            file_hash=metadata.get('source_file_hash', 'a' * 64),
+            uploader_id=metadata.get('uploader_id'),
+            page_num=metadata.get('page_num')
+        )
+
+        # Convert ChunkMetadata objects to dicts
+        chunks = []
+        for chunk_meta in chunk_metadata_list:
+            chunks.append({
+                'text': chunk_meta.chunk_text,
+                'metadata': chunk_meta
+            })
+
+        return chunks
+
 
     def chunk_text(
             self,
@@ -202,16 +256,15 @@ class SemanticChunker(ChunkerInterface):
 
         Example:
         --------
-        text = "Python is great. It's easy. Python has libraries. " \\
+        text = "Python is great. It's easy. Python has libraries. " \
                "Weather is nice. It's sunny."
 
         With threshold=0.7:
-
         Chunk 1: "Python is great. It's easy. Python has libraries."
-                 (High intra-chunk similarity - all about Python)
+        (High intra-chunk similarity - all about Python)
 
         Chunk 2: "Weather is nice. It's sunny."
-                 (High intra-chunk similarity - both about weather)
+        (High intra-chunk similarity - both about weather)
         """
         # Step 1: Validate inputs
         if not text or not text.strip():
@@ -224,7 +277,6 @@ class SemanticChunker(ChunkerInterface):
 
         # Step 2: Split into sentences
         sentences = self._split_sentences(text)
-
         if not sentences:
             logger.warning(f"No sentences found in doc_id={doc_id}")
             return []
@@ -255,7 +307,6 @@ class SemanticChunker(ChunkerInterface):
 
             # Check if we should add to current chunk or start new one
             current_text = ' '.join(current_chunk_sentences + [sentences[i]])
-
             should_add_to_current = (
                     similarity >= self.similarity_threshold  # Similar enough
                     and len(current_text) <= self.max_chunk_size  # Not too large
@@ -431,11 +482,8 @@ if __name__ == "__main__":
     Demonstration of SemanticChunker usage.
     Run this file directly: python core/chunking/semantic_chunker.py
     """
-
     logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
-    print("=" * 70)
-    print("SemanticChunker Usage Examples")
     print("=" * 70)
     print("SemanticChunker Usage Examples")
     print("=" * 70)
@@ -445,16 +493,16 @@ if __name__ == "__main__":
     print("-" * 70)
 
     sample_text = """
-    Python is a high-level programming language. It was created by Guido van Rossum.
-    Python emphasizes code readability. The language provides constructs for clear programming.
-    Python has a large standard library. It supports multiple programming paradigms.
-    
-    The weather today is sunny and warm. Temperature is around 75 degrees.
-    It's a perfect day for outdoor activities. Many people are enjoying the parks.
-    
-    Machine learning is a subset of artificial intelligence. It enables systems to learn from data.
-    Deep learning uses neural networks. These networks can recognize complex patterns.
-    """
+Python is a high-level programming language. It was created by Guido van Rossum.
+Python emphasizes code readability. The language provides constructs for clear programming.
+Python has a large standard library. It supports multiple programming paradigms.
+
+The weather today is sunny and warm. Temperature is around 75 degrees.
+It's a perfect day for outdoor activities. Many people are enjoying the parks.
+
+Machine learning is a subset of artificial intelligence. It enables systems to learn from data.
+Deep learning uses neural networks. These networks can recognize complex patterns.
+"""
 
     config = SemanticChunkingConfig(
         similarity_threshold=0.7,
@@ -481,158 +529,6 @@ if __name__ == "__main__":
         print(f"  Topic: {chunk.chunk_text.split('.')[0][:50]}...")  # First sentence
         print()
 
-    # Example 2: Comparing different similarity thresholds
-    print("\n2. Comparing Different Similarity Thresholds")
-    print("-" * 70)
-
-    thresholds_to_test = [
-        (0.5, "Loose (50%)"),
-        (0.7, "Balanced (70%)"),
-        (0.9, "Strict (90%)")
-    ]
-
-    for threshold, label in thresholds_to_test:
-        config = SemanticChunkingConfig(
-            similarity_threshold=threshold,
-            max_chunk_size=1000
-        )
-        chunker = SemanticChunker(config, embedding_model_name="all-MiniLM-L6-v2")
-
-        chunks = chunker.chunk_text(
-            text=sample_text,
-            doc_id=f"test_{label}",
-            domain="engineering",
-            source_file_path="./test.txt",
-            file_hash="test123"
-        )
-
-        avg_size = sum(len(c.chunk_text) for c in chunks) / len(chunks)
-        print(f"{label}: {len(chunks)} chunks, avg size: {avg_size:.0f} chars")
-
-    print("\n📊 Analysis:")
-    print("  - Lower threshold (0.5) → Fewer, larger chunks (loose grouping)")
-    print("  - Medium threshold (0.7) → Balanced chunk count (recommended)")
-    print("  - Higher threshold (0.9) → More, smaller chunks (strict grouping)")
-
-    # Example 3: Demonstrating topical coherence
-    print("\n3. Demonstrating Topical Coherence")
-    print("-" * 70)
-
-    multi_topic_text = """
-    HTTP is the foundation of data communication on the web. It uses a request-response model.
-    GET and POST are common HTTP methods. REST APIs use HTTP for communication.
-    
-    Database indexes improve query performance. B-tree indexes are commonly used.
-    Composite indexes can span multiple columns. Index maintenance has overhead.
-    
-    Docker containers package applications with dependencies. Kubernetes orchestrates containers.
-    Container images are built from Dockerfiles. Microservices often use containerization.
-    """
-
-    config = SemanticChunkingConfig(similarity_threshold=0.65, max_chunk_size=500)
-    chunker = SemanticChunker(config, embedding_model_name="all-MiniLM-L6-v2")
-
-    chunks = chunker.chunk_text(
-        text=multi_topic_text,
-        doc_id="tech_topics",
-        domain="engineering",
-        source_file_path="./topics.txt",
-        file_hash="topic123"
-    )
-
-    print(f"Text contains 3 distinct topics, created {len(chunks)} semantic chunks:\n")
-
-    for i, chunk in enumerate(chunks, 1):
-        # Extract key terms to identify topic
-        words = chunk.chunk_text.lower().split()
-        if any(w in words for w in ['http', 'api', 'rest', 'get', 'post']):
-            topic = "🌐 HTTP/APIs"
-        elif any(w in words for w in ['database', 'index', 'query', 'btree']):
-            topic = "💾 Databases"
-        elif any(w in words for w in ['docker', 'container', 'kubernetes']):
-            topic = "🐳 Containers"
-        else:
-            topic = "❓ Mixed"
-
-        print(f"Chunk {i} ({topic}):")
-        print(f"  {chunk.chunk_text[:80]}...")
-        print()
-
-    print("✅ Notice: Semantic chunking automatically grouped related sentences!")
-    print("   Each chunk is about a single topic, even though text mixed topics.")
-
-    # Example 4: Performance comparison with recursive chunking
-    print("\n4. Comparison: Semantic vs Recursive Chunking")
-    print("-" * 70)
-
-    from core.chunking.recursive_chunker import RecursiveChunker
-    from models.domain_config import RecursiveChunkingConfig
-    import time
-
-    test_text = sample_text * 3  # Make it longer
-
-    # Semantic chunking
-    semantic_config = SemanticChunkingConfig(similarity_threshold=0.7, max_chunk_size=1000)
-    semantic_chunker = SemanticChunker(semantic_config, "all-MiniLM-L6-v2")
-
-    start = time.time()
-    semantic_chunks = semantic_chunker.chunk_text(
-        text=test_text, doc_id="test", domain="test",
-        source_file_path="test.txt", file_hash="test"
-    )
-    semantic_time = time.time() - start
-
-    # Recursive chunking
-    recursive_config = RecursiveChunkingConfig(chunk_size=500, overlap=50)
-    recursive_chunker = RecursiveChunker(recursive_config, "all-MiniLM-L6-v2")
-
-    start = time.time()
-    recursive_chunks = recursive_chunker.chunk_text(
-        text=test_text, doc_id="test", domain="test",
-        source_file_path="test.txt", file_hash="test"
-    )
-    recursive_time = time.time() - start
-
-    print(f"Semantic Chunking:")
-    print(f"  - Chunks: {len(semantic_chunks)}")
-    print(f"  - Time: {semantic_time:.3f}s")
-    print(f"  - Avg size: {sum(len(c.chunk_text) for c in semantic_chunks) / len(semantic_chunks):.0f} chars")
-    print()
-    print(f"Recursive Chunking:")
-    print(f"  - Chunks: {len(recursive_chunks)}")
-    print(f"  - Time: {recursive_time:.3f}s")
-    print(f"  - Avg size: {sum(len(c.chunk_text) for c in recursive_chunks) / len(recursive_chunks):.0f} chars")
-    print()
-    print(f"⚡ Speed difference: {semantic_time/recursive_time:.1f}x slower (due to embedding computation)")
-    print(f"📊 Chunk count: Semantic creates {'more' if len(semantic_chunks) > len(recursive_chunks) else 'fewer'} chunks")
-
-    # Example 5: Use case recommendations
-    print("\n5. When to Use Each Strategy")
-    print("-" * 70)
-    print("""
-    🔄 RECURSIVE CHUNKING (Fixed-size):
-       ✅ Use when:
-          - Processing large volumes of documents (faster)
-          - Document structure is consistent (policies, manuals)
-          - Predictable chunk sizes matter (token budgets)
-          - Development/testing (simpler, faster iteration)
-       
-       Example domains: HR policies, legal contracts, financial reports
-    
-    🧠 SEMANTIC CHUNKING (Similarity-based):
-       ✅ Use when:
-          - Document quality > processing speed
-          - Documents have clear topical boundaries
-          - Coherent chunks are critical for retrieval
-          - Technical/academic content with distinct sections
-       
-       Example domains: Technical docs, research papers, API documentation
-    
-    💡 PRO TIP: Start with recursive (faster iteration), switch to semantic
-       for production if retrieval quality needs improvement.
-    """)
-
     print("\n" + "=" * 70)
     print("SemanticChunker examples completed!")
     print("=" * 70)
-

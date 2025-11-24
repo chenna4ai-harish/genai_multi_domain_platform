@@ -46,7 +46,6 @@ reportlab>=4.0.0                  # PDF generation (if needed)
 # DEVELOPMENT & TESTING
 # ============================================
 pytest==7.4.3                     # Testing framework
-
 # ============================================
 # ADDITIONAL MISSING DEPENDENCIES
 # ============================================
@@ -55,3 +54,4 @@ tqdm>=4.65.0                      # Progress bars (used by transformers)
 filelock>=3.12.0                  # File locking (used by transformers)
 packaging>=23.0                   # Package version parsing
 typing-extensions>=4.5.0          # Type hints backport
+

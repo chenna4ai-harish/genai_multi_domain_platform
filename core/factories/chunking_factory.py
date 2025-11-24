@@ -1,4 +1,5 @@
 """
+
 core/factories/chunking_factory.py
 
 This module implements the Factory Pattern for creating chunking strategy instances.
@@ -54,14 +55,19 @@ References:
 -----------
 - Factory Pattern: https://refactoring.guru/design-patterns/factory-method
 - Real Python Guide: https://realpython.com/factory-method-python/
+
 """
 
+from typing import Union, Dict, Any
+import logging
 
-from core.interfaces.chunking_interface import ChunkerInterface
+# Import chunker implementations
 from core.chunking.recursive_chunker import RecursiveChunker
 from core.chunking.semantic_chunker import SemanticChunker
-from models.domain_config import ChunkingConfig
-import logging
+from core.interfaces.chunking_interface import ChunkerInterface
+
+# Import config models
+from models.domain_config import RecursiveChunkingConfig, SemanticChunkingConfig
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -69,165 +75,233 @@ logger = logging.getLogger(__name__)
 
 class ChunkingFactory:
     """
-    Factory for creating chunking strategy instances based on configuration.
+    Factory for creating chunker instances based on configuration.
 
-    This factory implements the Factory Method pattern to decouple chunking
-    strategy creation from usage. The factory reads the configuration and
-    returns the appropriate ChunkerInterface implementation.
+    This factory supports:
+    - Recursive (fixed-size) chunking
+    - Semantic (similarity-based) chunking
+    - Easy extension for new chunking strategies
 
-    Supported Strategies:
-    ---------------------
-    - "recursive": Fixed-size chunking with overlap (RecursiveChunker)
-    - "semantic": Embedding-based topical grouping (SemanticChunker)
-
-    Adding New Strategies:
-    ----------------------
-    1. Implement new chunker class inheriting from ChunkerInterface
-    2. Add elif branch in create_chunker() method
-    3. Update ChunkingConfig to include new strategy settings
-    4. That's it! No other code changes needed.
-
-    Design Benefits:
-    ----------------
-    - **Polymorphism**: Returns ChunkerInterface, works with any implementation
-    - **Config-Driven**: Strategy determined by YAML config, not code
-    - **Extensible**: Easy to add new strategies without modifying calling code
-    - **Type-Safe**: Static type checkers understand the return type
-
-    Example Usage:
-    --------------
-    from models.domain_config import ChunkingConfig, RecursiveChunkingConfig
-
-    # Create config
-    config = ChunkingConfig(
-        strategy="recursive",
-        recursive=RecursiveChunkingConfig(chunk_size=500, overlap=50)
-    )
-
-    # Create chunker via factory
-    chunker = ChunkingFactory.create_chunker(config, "all-MiniLM-L6-v2")
-
-    # Use chunker (polymorphic - works with any strategy!)
-    chunks = chunker.chunk_text(
-        text="Your document text...",
-        doc_id="doc123",
-        domain="hr",
-        source_file_path="./doc.pdf",
-        file_hash="abc123"
-    )
+    All chunkers implement ChunkerInterface for consistency.
     """
 
-    @staticmethod
-    def create_chunker(config: ChunkingConfig, embedding_model_name: str) -> ChunkerInterface:
-        """
-        Create and return a chunker instance based on configuration.
+    # Registry of available chunking strategies
+    _available_chunkers = {
+        "recursive": RecursiveChunker,
+        "semantic": SemanticChunker,
+        # Add new strategies here as you implement them:
+        # "sliding_window": SlidingWindowChunker,
+        # "paragraph": ParagraphChunker,
+    }
 
-        This is the CORE FACTORY METHOD that implements the Factory Pattern.
-        It encapsulates the decision logic of which chunker class to instantiate.
+    @staticmethod
+    def create_chunker(
+            config: Union[RecursiveChunkingConfig, SemanticChunkingConfig, Dict[str, Any]],
+            embedding_model_name: str
+    ) -> ChunkerInterface:
+        """
+        Create a chunker instance based on configuration.
+
+        This method:
+        1. Extracts the strategy from config
+        2. Validates the strategy is supported
+        3. Creates appropriate config object if needed
+        4. Instantiates the chunker with proper parameters
 
         Parameters:
         -----------
-        config : ChunkingConfig
-            Chunking configuration from domain YAML
-            Contains:
-            - strategy: "recursive" or "semantic"
-            - recursive: RecursiveChunkingConfig settings
-            - semantic: SemanticChunkingConfig settings
+        config : Union[RecursiveChunkingConfig, SemanticChunkingConfig, Dict]
+            Configuration object or dict with chunking parameters
+            Required fields:
+            - strategy: str ("recursive" or "semantic")
+
+            For recursive strategy:
+            - chunk_size: int (default: 500)
+            - overlap: int (default: 50)
+
+            For semantic strategy:
+            - similarity_threshold: float (default: 0.7)
+            - max_chunk_size: int (default: 1000)
 
         embedding_model_name : str
             Name of the embedding model (for metadata tracking)
-            This is stored in chunk metadata for provenance
+            Example: "all-MiniLM-L6-v2"
 
         Returns:
         --------
         ChunkerInterface:
-            Concrete chunker implementation (RecursiveChunker or SemanticChunker)
-            Guaranteed to implement the ChunkerInterface contract
+            Instantiated chunker implementing ChunkerInterface
 
         Raises:
         -------
         ValueError:
-            If config.strategy is not recognized
-            If required configuration is missing
-
-        Algorithm:
-        ----------
-        1. Read config.strategy to determine which chunker to create
-        2. Extract strategy-specific config (config.recursive or config.semantic)
-        3. Instantiate the appropriate chunker class with its config
-        4. Return the chunker (polymorphic - caller doesn't know which type)
+            If strategy is missing or unsupported
+            If required config parameters are missing
 
         Example:
         --------
-        # Recursive chunking
-        config = ChunkingConfig(strategy="recursive")
-        chunker = ChunkingFactory.create_chunker(config, "model-name")
-        # Returns: RecursiveChunker instance
-
-        # Semantic chunking
-        config = ChunkingConfig(strategy="semantic")
-        chunker = ChunkingFactory.create_chunker(config, "model-name")
-        # Returns: SemanticChunker instance
-
-        # Both return ChunkerInterface, so calling code works with either!
-
-        Notes:
-        ------
-        - This method is static (no instance needed)
-        - Strategy determined at runtime based on config
-        - Type hint is ChunkerInterface (polymorphic return)
-        - New strategies can be added without breaking existing code
-        """
-        strategy = config.strategy.lower()
-
-        logger.debug(
-            f"Creating chunker: strategy='{strategy}', "
-            f"embedding_model='{embedding_model_name}'"
+        # Using Pydantic config
+        config = RecursiveChunkingConfig(
+            strategy="recursive",
+            chunk_size=500,
+            overlap=50
         )
+        chunker = ChunkingFactory.create_chunker(config, "all-MiniLM-L6-v2")
 
-        # Factory logic: Switch on strategy and instantiate appropriate class
-
-        if strategy == "recursive":
-            # OPTION 1: Recursive (Fixed-size) Chunking
-            logger.info(
-                f"Creating RecursiveChunker: "
-                f"chunk_size={config.recursive.chunk_size}, "
-                f"overlap={config.recursive.overlap}"
-            )
-
-            return RecursiveChunker(
-                config=config.recursive,
-                embedding_model_name=embedding_model_name
-            )
-
-        elif strategy == "semantic":
-            # OPTION 2: Semantic (Similarity-based) Chunking
-            logger.info(
-                f"Creating SemanticChunker: "
-                f"threshold={config.semantic.similarity_threshold}, "
-                f"max_size={config.semantic.max_chunk_size}"
-            )
-
-            return SemanticChunker(
-                config=config.semantic,
-                embedding_model_name=embedding_model_name
-            )
-
-        # TO ADD A NEW STRATEGY:
-        # elif strategy == "paragraph":
-        #     return ParagraphChunker(
-        #         config=config.paragraph,
-        #         embedding_model_name=embedding_model_name
-        #     )
-
+        # Using dict config
+        config = {
+            "strategy": "recursive",
+            "chunk_size": 500,
+            "overlap": 50
+        }
+        chunker = ChunkingFactory.create_chunker(config, "all-MiniLM-L6-v2")
+        """
+        # Step 1: Extract strategy from config (support both Pydantic and dict)
+        if isinstance(config, dict):
+            strategy = config.get("strategy")
         else:
-            # Unknown strategy - provide helpful error message
-            supported_strategies = ["recursive", "semantic"]
+            strategy = getattr(config, "strategy", None)
+
+        if not strategy:
             raise ValueError(
-                f"Unknown chunking strategy: '{strategy}'\n"
-                f"Supported strategies: {supported_strategies}\n"
-                f"Check your domain config YAML file."
+                "Chunking config must specify a 'strategy' field. "
+                f"Available strategies: {list(ChunkingFactory._available_chunkers.keys())}"
             )
+
+        strategy = strategy.lower()
+        logger.info(f"Creating chunker with strategy: {strategy}")
+
+        # Step 2: Validate strategy is supported
+        chunker_cls = ChunkingFactory._available_chunkers.get(strategy)
+        if not chunker_cls:
+            raise ValueError(
+                f"Unknown chunking strategy: '{strategy}'. "
+                f"Available strategies: {list(ChunkingFactory._available_chunkers.keys())}"
+            )
+
+        # Step 3: Instantiate chunker based on strategy
+        try:
+            if strategy == "recursive":
+                # Create RecursiveChunker with proper config
+                if isinstance(config, dict):
+                    # Convert dict to Pydantic model
+                    chunking_config = RecursiveChunkingConfig(
+                        strategy=strategy,
+                        chunk_size=config.get("chunk_size", 500),
+                        overlap=config.get("overlap", 50)
+                    )
+                else:
+                    # Already a Pydantic model
+                    chunking_config = config
+
+                chunker = RecursiveChunker(
+                    config=chunking_config,
+                    embedding_model_name=embedding_model_name
+                )
+
+                logger.info(
+                    f"Created RecursiveChunker: "
+                    f"chunk_size={chunking_config.chunk_size}, "
+                    f"overlap={chunking_config.overlap}, "
+                    f"model={embedding_model_name}"
+                )
+
+            elif strategy == "semantic":
+                # Create SemanticChunker with proper config
+                if isinstance(config, dict):
+                    # Convert dict to Pydantic model
+                    chunking_config = SemanticChunkingConfig(
+                        strategy=strategy,
+                        similarity_threshold=config.get("similarity_threshold", 0.7),
+                        max_chunk_size=config.get("max_chunk_size", 1000)
+                    )
+                else:
+                    # Already a Pydantic model
+                    chunking_config = config
+
+                chunker = SemanticChunker(
+                    config=chunking_config,
+                    embedding_model_name=embedding_model_name
+                )
+
+                logger.info(
+                    f"Created SemanticChunker: "
+                    f"threshold={chunking_config.similarity_threshold}, "
+                    f"max_size={chunking_config.max_chunk_size}, "
+                    f"model={embedding_model_name}"
+                )
+
+            else:
+                # For future custom chunkers
+                # Assume they follow the same pattern: __init__(config, embedding_model_name)
+                if isinstance(config, dict):
+                    # Cannot create Pydantic model for unknown strategy
+                    # Pass dict directly and let chunker handle it
+                    chunker = chunker_cls(config, embedding_model_name)
+                else:
+                    chunker = chunker_cls(config, embedding_model_name)
+
+                logger.info(f"Created custom chunker: {chunker_cls.__name__}")
+
+            return chunker
+
+        except Exception as e:
+            logger.error(
+                f"Failed to create chunker with strategy '{strategy}': {e}"
+            )
+            raise ValueError(
+                f"Failed to instantiate chunker for strategy '{strategy}'. "
+                f"Error: {e}"
+            )
+
+    @staticmethod
+    def get_available_strategies() -> list:
+        """
+        Get list of available chunking strategies.
+
+        Useful for:
+        - Validation
+        - UI dropdowns
+        - Documentation
+
+        Returns:
+        --------
+        list:
+            List of strategy names
+            Example: ["recursive", "semantic"]
+        """
+        return list(ChunkingFactory._available_chunkers.keys())
+
+    @staticmethod
+    def register_strategy(name: str, chunker_class: type):
+        """
+        Register a new chunking strategy (for extensibility).
+
+        This allows adding custom chunking strategies at runtime
+        without modifying the factory code.
+
+        Parameters:
+        -----------
+        name : str
+            Strategy name (will be lowercased)
+        chunker_class : type
+            Chunker class implementing ChunkerInterface
+
+        Example:
+        --------
+        # Register custom chunker
+        ChunkingFactory.register_strategy("paragraph", ParagraphChunker)
+
+        # Now can use it
+        config = {"strategy": "paragraph", "min_length": 100}
+        chunker = ChunkingFactory.create_chunker(config, "model-name")
+        """
+        name = name.lower()
+        if name in ChunkingFactory._available_chunkers:
+            logger.warning(f"Overwriting existing strategy: {name}")
+
+        ChunkingFactory._available_chunkers[name] = chunker_class
+        logger.info(f"Registered chunking strategy: {name}")
 
 
 # =============================================================================
@@ -239,109 +313,86 @@ if __name__ == "__main__":
     Demonstration of ChunkingFactory usage.
     Run: python core/factories/chunking_factory.py
     """
-
-    import logging
-    from models.domain_config import (
-        ChunkingConfig,
-        RecursiveChunkingConfig,
-        SemanticChunkingConfig
-    )
-
     logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
     print("=" * 70)
     print("ChunkingFactory Usage Examples")
     print("=" * 70)
 
-    # Example 1: Creating recursive chunker via factory
-    print("\n1. Creating Recursive Chunker")
+    # Example 1: Create recursive chunker from dict config
+    print("\n1. Recursive Chunker from Dict Config")
     print("-" * 70)
 
-    recursive_config = ChunkingConfig(
+    recursive_config = {
+        "strategy": "recursive",
+        "chunk_size": 500,
+        "overlap": 50
+    }
+
+    recursive_chunker = ChunkingFactory.create_chunker(
+        config=recursive_config,
+        embedding_model_name="all-MiniLM-L6-v2"
+    )
+
+    print(f"Created: {recursive_chunker.__class__.__name__}")
+    print(f"Chunk size: {recursive_chunker.chunk_size}")
+    print(f"Overlap: {recursive_chunker.overlap}")
+
+    # Example 2: Create semantic chunker from dict config
+    print("\n2. Semantic Chunker from Dict Config")
+    print("-" * 70)
+
+    semantic_config = {
+        "strategy": "semantic",
+        "similarity_threshold": 0.7,
+        "max_chunk_size": 1000
+    }
+
+    semantic_chunker = ChunkingFactory.create_chunker(
+        config=semantic_config,
+        embedding_model_name="all-MiniLM-L6-v2"
+    )
+
+    print(f"Created: {semantic_chunker.__class__.__name__}")
+    print(f"Threshold: {semantic_chunker.similarity_threshold}")
+    print(f"Max size: {semantic_chunker.max_chunk_size}")
+
+    # Example 3: Create from Pydantic config
+    print("\n3. Recursive Chunker from Pydantic Config")
+    print("-" * 70)
+
+    from models.domain_config import RecursiveChunkingConfig
+
+    pydantic_config = RecursiveChunkingConfig(
         strategy="recursive",
-        recursive=RecursiveChunkingConfig(chunk_size=500, overlap=50)
+        chunk_size=800,
+        overlap=80
     )
 
-    chunker = ChunkingFactory.create_chunker(
-        recursive_config,
-        embedding_model_name="all-MiniLM-L6-v2"
+    pydantic_chunker = ChunkingFactory.create_chunker(
+        config=pydantic_config,
+        embedding_model_name="all-mpnet-base-v2"
     )
 
-    print(f"Created: {type(chunker).__name__}")
-    print(f"Interface: {isinstance(chunker, ChunkerInterface)}")
-    print(f"Config: chunk_size=500, overlap=50")
+    print(f"Created: {pydantic_chunker.__class__.__name__}")
+    print(f"Chunk size: {pydantic_chunker.chunk_size}")
 
-    # Example 2: Creating semantic chunker via factory
-    print("\n2. Creating Semantic Chunker")
+    # Example 4: List available strategies
+    print("\n4. Available Strategies")
     print("-" * 70)
 
-    semantic_config = ChunkingConfig(
-        strategy="semantic",
-        semantic=SemanticChunkingConfig(
-            similarity_threshold=0.7,
-            max_chunk_size=1000
-        )
-    )
+    strategies = ChunkingFactory.get_available_strategies()
+    print(f"Available: {strategies}")
 
-    chunker = ChunkingFactory.create_chunker(
-        semantic_config,
-        embedding_model_name="all-MiniLM-L6-v2"
-    )
-
-    print(f"Created: {type(chunker).__name__}")
-    print(f"Interface: {isinstance(chunker, ChunkerInterface)}")
-    print(f"Config: threshold=0.7, max_size=1000")
-
-    # Example 3: Demonstrating polymorphism
-    print("\n3. Demonstrating Polymorphism")
-    print("-" * 70)
-
-
-    def process_with_any_chunker(config: ChunkingConfig, text: str):
-        """
-        This function works with ANY chunker implementation!
-        It doesn't know or care which strategy is used.
-        """
-        # Create chunker via factory (polymorphic)
-        chunker = ChunkingFactory.create_chunker(config, "test-model")
-
-        # Use chunker (works with any implementation!)
-        chunks = chunker.chunk_text(
-            text=text,
-            doc_id="test_doc",
-            domain="test",
-            source_file_path="test.txt",
-            file_hash="test123"
-        )
-
-        print(f"Strategy: {config.strategy}")
-        print(f"Chunker: {type(chunker).__name__}")
-        print(f"Chunks created: {len(chunks)}")
-        return chunks
-
-
-    test_text = "This is a test document. " * 50
-
-    # Works with recursive
-    recursive_chunks = process_with_any_chunker(recursive_config, test_text)
-    print()
-
-    # Works with semantic (same function!)
-    semantic_chunks = process_with_any_chunker(semantic_config, test_text)
-
-    print("\n✅ Same function works with different strategies!")
-    print("   This is the power of the Factory Pattern + Polymorphism")
-
-    # Example 4: Error handling
-    print("\n4. Error Handling")
+    # Example 5: Error handling
+    print("\n5. Error Handling")
     print("-" * 70)
 
     try:
-        bad_config = ChunkingConfig(strategy="nonexistent")
-        chunker = ChunkingFactory.create_chunker(bad_config, "model")
+        invalid_config = {"strategy": "unknown_strategy"}
+        ChunkingFactory.create_chunker(invalid_config, "model")
     except ValueError as e:
-        print(f"✅ Caught expected error:")
-        print(f"   {e}")
+        print(f"✅ Caught expected error: {e}")
 
     print("\n" + "=" * 70)
     print("ChunkingFactory examples completed!")

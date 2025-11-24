@@ -1,4 +1,5 @@
 """
+
 core/embeddings/sentence_transformer_embeddings.py
 
 This module implements the Sentence-Transformers embedding provider (OPTION 1).
@@ -47,7 +48,6 @@ When to Use Sentence-Transformers:
 ✅ Privacy-sensitive data (stays on your servers)
 ✅ High-volume applications (no API rate limits)
 ✅ Offline deployments (no internet required)
-
 ❌ When you need absolute best quality (use Gemini/OpenAI)
 ❌ When you don't have GPU and need speed (cloud APIs are faster on CPU)
 
@@ -69,6 +69,7 @@ References:
 - Documentation: https://www.sbert.net/
 - Models: https://www.sbert.net/docs/pretrained_models.html
 - GitHub: https://github.com/UKPLab/sentence-transformers
+
 """
 
 from typing import List
@@ -97,7 +98,6 @@ class SentenceTransformerEmbeddings(EmbeddingInterface):
         - "all-MiniLM-L6-v2" (384-dim, fast, recommended default)
         - "all-mpnet-base-v2" (768-dim, better quality)
         - "paraphrase-multilingual-MiniLM-L12-v2" (384-dim, multilingual)
-
         See full list: https://www.sbert.net/docs/pretrained_models.html
 
     device : str
@@ -105,7 +105,6 @@ class SentenceTransformerEmbeddings(EmbeddingInterface):
         - "cpu": Works everywhere, slower (50-200 sent/sec)
         - "cuda": NVIDIA GPU, much faster (1000-5000 sent/sec)
         - "mps": Apple M1/M2, faster than CPU
-
         The library auto-detects if CUDA is available
 
     batch_size : int
@@ -223,7 +222,6 @@ class SentenceTransformerEmbeddings(EmbeddingInterface):
         np.ndarray:
             2D numpy array of shape (n_texts, embedding_dim)
             dtype: float32
-
             If normalize=True, each row has L2 norm = 1.0
 
         Raises:
@@ -237,7 +235,6 @@ class SentenceTransformerEmbeddings(EmbeddingInterface):
         ------------
         The method uses automatic batching and shows a progress bar for
         large batches (>100 texts). Typical speeds:
-
         - CPU (all-MiniLM-L6-v2): ~50-100 texts/sec
         - GPU (all-MiniLM-L6-v2): ~1000-2000 texts/sec
         - GPU (all-mpnet-base-v2): ~500-1000 texts/sec
@@ -265,7 +262,6 @@ class SentenceTransformerEmbeddings(EmbeddingInterface):
 
         # Filter out empty strings (encode would fail)
         valid_texts = [t for t in texts if t and t.strip()]
-
         if not valid_texts:
             raise ValueError("All texts are empty after filtering")
 
@@ -361,7 +357,6 @@ if __name__ == "__main__":
     Demonstration of SentenceTransformerEmbeddings usage.
     Run this file: python core/embeddings/sentence_transformer_embeddings.py
     """
-
     logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
     print("=" * 70)

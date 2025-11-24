@@ -1,5 +1,6 @@
 """
-core/vector_stores/chromadb_store.py
+
+core/vectorstores/chromadb_store.py
 
 This module implements the ChromaDB vector store adapter (OPTION 1).
 
@@ -39,7 +40,6 @@ When to Use ChromaDB:
 ✅ Small-to-medium datasets (<1M vectors)
 ✅ Budget-constrained projects (free)
 ✅ Quick prototyping and testing
-
 ❌ Distributed systems (use Pinecone/Weaviate)
 ❌ Very large datasets (>10M vectors)
 ❌ High-availability requirements
@@ -63,9 +63,10 @@ References:
 - Documentation: https://docs.trychroma.com/
 - GitHub: https://github.com/chroma-core/chroma
 - Discord: https://discord.gg/MMeYNTmh3x
+
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 import chromadb
 from chromadb.config import Settings
@@ -89,18 +90,15 @@ class ChromaDBStore(VectorStoreInterface):
     persist_directory : str
         Directory path where ChromaDB will persist data
         Example: "./data/chroma_db"
-
         The directory will contain:
         - chroma.sqlite3 (metadata database)
         - index/ (HNSW index files)
-
         Important: Back up this directory regularly!
 
     collection_name : str
         Name of the ChromaDB collection (like a database table)
         Each domain should have its own collection
         Examples: "hr_collection", "finance_collection"
-
         Naming rules:
         - 3-63 characters
         - Start/end with alphanumeric
@@ -123,6 +121,9 @@ class ChromaDBStore(VectorStoreInterface):
 
     # Delete old document
     store.delete_by_doc_id("old_policy_2023")
+
+    # Get all documents for BM25 (Phase 2 hybrid retrieval)
+    corpus, doc_ids = store.get_all_documents()
     """
 
     def __init__(self, persist_directory: str, collection_name: str):
@@ -150,11 +151,9 @@ class ChromaDBStore(VectorStoreInterface):
             from pathlib import Path
             persist_path = Path(persist_directory)
             persist_path.mkdir(parents=True, exist_ok=True)
-
             logger.info(f"Persist path: {persist_path.absolute()}")
 
             # Initialize ChromaDB PersistentClient (0.4.x API)
-            # No Settings needed - just pass the path
             self.client = chromadb.PersistentClient(path=str(persist_path))
 
             # Get or create collection with cosine similarity
@@ -167,10 +166,10 @@ class ChromaDBStore(VectorStoreInterface):
             count = self.collection.count()
             logger.info(
                 f"✅ ChromaDB initialized successfully!\n"
-                f"  Collection: {collection_name}\n"
-                f"  Existing vectors: {count:,}\n"
-                f"  Distance metric: cosine\n"
-                f"  Persist directory: {persist_path.absolute()}"
+                f"   Collection: {collection_name}\n"
+                f"   Existing vectors: {count:,}\n"
+                f"   Distance metric: cosine\n"
+                f"   Persist directory: {persist_path.absolute()}"
             )
 
         except Exception as e:
@@ -203,24 +202,6 @@ class ChromaDBStore(VectorStoreInterface):
             If embeddings have wrong shape
         RuntimeError:
             If upsert operation fails
-
-        Performance:
-        ------------
-        - Batch size: ChromaDB handles batching internally
-        - Speed: ~1000-5000 chunks/sec
-        - Memory: Temporary spike during upsert (~2x embedding size)
-
-        Example:
-        --------
-        chunks = chunker.chunk_text(...)
-        embeddings = embedder.embed_texts([c.chunk_text for c in chunks])
-        store.upsert(chunks, embeddings)
-
-        Notes:
-        ------
-        - Duplicate chunk_ids will be updated (not create duplicates)
-        - Metadata is stored in ChromaDB's SQLite database
-        - Embeddings are stored in HNSW index
         """
         # Step 1: Validate inputs
         if len(chunks) != len(embeddings):
@@ -246,7 +227,6 @@ class ChromaDBStore(VectorStoreInterface):
             metadatas = [self._serialize_metadata(chunk) for chunk in chunks]
 
             # Step 3: Upsert to ChromaDB
-            # ChromaDB API: collection.upsert(ids, embeddings, documents, metadatas)
             self.collection.upsert(
                 ids=ids,
                 documents=documents,
@@ -281,85 +261,19 @@ class ChromaDBStore(VectorStoreInterface):
         """
         Search for similar chunks using vector similarity and optional metadata filters.
 
-        ChromaDB uses approximate nearest neighbor (ANN) search with HNSW index
-        for fast similarity search.
-
         Parameters:
         -----------
         query_embedding : np.ndarray
             1D numpy array of query embedding
-            Shape: (embedding_dim,)
-
         top_k : int
-            Number of top results to return (1-100 recommended)
-
+            Number of top results to return
         filters : Dict[str, Any], optional
             Metadata filters using ChromaDB's where syntax
-
-            Examples:
-            ---------
-            # Filter by domain
-            filters = {"domain": "hr"}
-
-            # Filter by authoritative docs
-            filters = {"is_authoritative": True}
-
-            # Filter by doc_id
-            filters = {"doc_id": "employee_handbook_2025"}
-
-            # Compound filters (AND)
-            filters = {"$and": [
-                {"domain": "hr"},
-                {"is_authoritative": True}
-            ]}
-
-            # Compound filters (OR)
-            filters = {"$or": [
-                {"domain": "hr"},
-                {"domain": "finance"}
-            ]}
-
-            See: https://docs.trychroma.com/usage-guide#filtering-by-metadata
 
         Returns:
         --------
         List[Dict]:
-            List of result dictionaries, each containing:
-            - 'id': chunk_id
-            - 'document': chunk_text
-            - 'metadata': metadata dict
-            - 'distance': similarity distance (lower = more similar)
-
-            Sorted by similarity (most similar first)
-
-        Raises:
-        -------
-        ValueError:
-            If query_embedding has wrong shape
-            If top_k is invalid
-        RuntimeError:
-            If search fails
-
-        Performance:
-        ------------
-        - Latency: 10-100ms (depends on collection size and top_k)
-        - Scales: O(log n) for HNSW index
-
-        Example:
-        --------
-        # Simple search
-        query_emb = embedder.embed_texts(["vacation policy"])[0]
-        results = store.search(query_emb, top_k=10)
-
-        # Search with filters
-        results = store.search(
-            query_emb,
-            top_k=10,
-            filters={"domain": "hr", "is_authoritative": True}
-        )
-
-        for result in results:
-            print(f"{result['distance']:.3f} - {result['document'][:100]}...")
+            List of results with id, document, metadata, distance
         """
         # Step 1: Validate inputs
         if query_embedding.ndim != 1:
@@ -377,17 +291,15 @@ class ChromaDBStore(VectorStoreInterface):
 
         try:
             # Step 2: Query ChromaDB
-            # API: collection.query(query_embeddings, n_results, where)
             results = self.collection.query(
-                query_embeddings=[query_embedding.tolist()],  # Must be 2D list
+                query_embeddings=[query_embedding.tolist()],
                 n_results=top_k,
-                where=filters,  # Optional metadata filters
-                include=["documents", "metadatas", "distances"]  # What to return
+                where=filters,
+                include=["documents", "metadatas", "distances"]
             )
 
             # Step 3: Format results
             formatted_results = self._format_results(results)
-
             logger.debug(f"Found {len(formatted_results)} results")
 
             return formatted_results
@@ -406,30 +318,10 @@ class ChromaDBStore(VectorStoreInterface):
         """
         Delete all chunks belonging to a document.
 
-        This is used when:
-        - Removing outdated documents
-        - Replacing documents (delete old, upsert new)
-        - Cleaning up test data
-
         Parameters:
         -----------
         doc_id : str
             Document ID to delete all chunks for
-
-        Example:
-        --------
-        # Delete all chunks from old policy
-        store.delete_by_doc_id("employee_handbook_2023")
-
-        # Replace document (delete + upsert)
-        store.delete_by_doc_id("policy_v1")
-        store.upsert(new_chunks, new_embeddings)
-
-        Notes:
-        ------
-        - Deletes from both metadata database and HNSW index
-        - Operation is immediate (no undo)
-        - Collection count is updated automatically
         """
         logger.info(f"Deleting all chunks for doc_id: {doc_id}")
 
@@ -458,34 +350,81 @@ class ChromaDBStore(VectorStoreInterface):
                 f"Error: {e}"
             )
 
+    def get_all_documents(self) -> Tuple[List[str], List[str]]:
+        """
+        Retrieve all document texts and IDs from the collection.
+
+        This method is REQUIRED for Phase 2 hybrid retrieval to build BM25 indexes.
+
+        Returns:
+        --------
+        Tuple[List[str], List[str]]:
+            Tuple of (corpus, doc_ids)
+            - corpus: List of all chunk texts
+            - doc_ids: List of corresponding chunk IDs
+
+        Example:
+        --------
+        # Build BM25 index for hybrid retrieval
+        corpus, doc_ids = store.get_all_documents()
+        bm25_index = BM25Retrieval(corpus=corpus, doc_ids=doc_ids)
+        """
+        logger.info(f"Retrieving all documents from collection: {self.collection_name}")
+
+        try:
+            # Get total count for logging
+            total_count = self.collection.count()
+
+            if total_count == 0:
+                logger.warning("Collection is empty, returning empty corpus")
+                return [], []
+
+            logger.info(f"Collection has {total_count:,} chunks, fetching all...")
+
+            # ChromaDB API: collection.get() retrieves all documents
+            results = self.collection.get(
+                include=["documents"]  # Only need documents and IDs
+            )
+
+            # Extract data from results
+            doc_ids = results['ids']
+            corpus = results['documents']
+
+            # Validate data
+            if len(corpus) != len(doc_ids):
+                raise RuntimeError(
+                    f"Data mismatch: got {len(corpus)} documents but {len(doc_ids)} IDs"
+                )
+
+            logger.info(
+                f"✅ Retrieved {len(corpus):,} documents from ChromaDB\n"
+                f"   Collection: {self.collection_name}\n"
+                f"   Corpus size: {sum(len(text) for text in corpus):,} characters"
+            )
+
+            return corpus, doc_ids
+
+        except Exception as e:
+            logger.error(f"Failed to retrieve all documents: {e}", exc_info=True)
+            raise RuntimeError(
+                f"Failed to retrieve documents from ChromaDB\n"
+                f"Collection: {self.collection_name}\n"
+                f"Error: {e}"
+            )
+
+    # =========================================================================
+    # HELPER METHODS (Private)
+    # =========================================================================
+
     def _serialize_metadata(self, chunk: ChunkMetadata) -> Dict[str, Any]:
         """
         Convert ChunkMetadata to ChromaDB-compatible metadata dict.
 
         ChromaDB Metadata Limitations:
-        -------------------------------
         - Values must be: str, int, float, or bool
         - No nested dicts or lists
-        - No None values (use empty string instead)
-        - Keys must be strings
-
-        Parameters:
-        -----------
-        chunk : ChunkMetadata
-            Chunk metadata object
-
-        Returns:
-        --------
-        dict:
-            ChromaDB-compatible metadata dictionary
-
-        Notes:
-        ------
-        - Converts timestamps to ISO format strings
-        - Converts tuple (char_range) to separate fields
-        - Handles None values by replacing with defaults
+        - No None values
         """
-        # Convert char_range tuple to separate fields
         char_start, char_end = chunk.char_range
 
         return {
@@ -495,19 +434,16 @@ class ChromaDBStore(VectorStoreInterface):
             "char_start": char_start,
             "char_end": char_end,
             "page_num": chunk.page_num if chunk.page_num is not None else 0,
-
             # Provenance fields
             "uploader_id": chunk.uploader_id or "",
             "upload_timestamp": chunk.upload_timestamp.isoformat(),
             "document_version": chunk.document_version,
             "source_file_path": chunk.source_file_path,
             "source_file_hash": chunk.source_file_hash,
-
             # Processing fields
             "embedding_model_name": chunk.embedding_model_name,
             "chunking_strategy": chunk.chunking_strategy,
             "chunk_type": chunk.chunk_type,
-
             # Quality fields
             "is_authoritative": chunk.is_authoritative,
             "confidence_score": chunk.confidence_score,
@@ -518,35 +454,10 @@ class ChromaDBStore(VectorStoreInterface):
         """
         Format ChromaDB query results into standardized structure.
 
-        ChromaDB returns nested lists structure:
-        {
-            'ids': [['id1', 'id2', ...]],
-            'documents': [['text1', 'text2', ...]],
-            'metadatas': [[{...}, {...}, ...]],
-            'distances': [[0.1, 0.2, ...]]
-        }
-
-        We flatten this to:
-        [
-            {'id': 'id1', 'document': 'text1', 'metadata': {...}, 'distance': 0.1},
-            {'id': 'id2', 'document': 'text2', 'metadata': {...}, 'distance': 0.2},
-            ...
-        ]
-
-        Parameters:
-        -----------
-        results : dict
-            Raw results from ChromaDB query()
-
-        Returns:
-        --------
-        List[Dict]:
-            Formatted results list
+        ChromaDB returns nested lists, we flatten to list of dicts.
         """
         formatted = []
 
-        # ChromaDB returns results in nested lists (batch support)
-        # We only query once, so we take [0] index
         for i in range(len(results['ids'][0])):
             formatted.append({
                 'id': results['ids'][0][i],
@@ -564,16 +475,7 @@ class ChromaDBStore(VectorStoreInterface):
         Returns:
         --------
         dict:
-            Collection statistics including:
-            - 'name': Collection name
-            - 'count': Number of vectors
-            - 'metadata': Collection metadata (distance metric, etc.)
-
-        Example:
-        --------
-        stats = store.get_collection_stats()
-        print(f"Collection: {stats['name']}")
-        print(f"Vectors: {stats['count']:,}")
+            Collection statistics (name, count, metadata)
         """
         return {
             'name': self.collection.name,
@@ -589,9 +491,8 @@ class ChromaDBStore(VectorStoreInterface):
 if __name__ == "__main__":
     """
     Demonstration of ChromaDBStore usage.
-    Run: python core/vector_stores/chromadb_store.py
+    Run: python core/vectorstores/chromadb_store.py
     """
-
     logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
     print("=" * 70)
@@ -615,7 +516,6 @@ if __name__ == "__main__":
     print("\n2. Upserting Chunks with Embeddings")
     print("-" * 70)
 
-    # Create sample chunks
     from models.metadata_models import ChunkMetadata
 
     chunks = [
@@ -641,9 +541,7 @@ if __name__ == "__main__":
         )
     ]
 
-    # Generate dummy embeddings (in real use, use embedder)
     embeddings = np.random.rand(2, 384).astype(np.float32)
-
     store.upsert(chunks, embeddings)
 
     # Example 3: Search
@@ -669,15 +567,26 @@ if __name__ == "__main__":
         top_k=10,
         filters={"domain": "hr"}
     )
-
     print(f"Found {len(results)} results in HR domain")
 
-    # Example 5: Delete by doc_id
-    print("\n5. Deleting Document")
+    # Example 5: Get all documents (Phase 2 - for BM25)
+    print("\n5. Retrieve All Documents (Hybrid Retrieval)")
+    print("-" * 70)
+
+    corpus, doc_ids = store.get_all_documents()
+    print(f"Corpus size: {len(corpus)} documents")
+    print(f"Total characters: {sum(len(text) for text in corpus):,}")
+
+    if corpus:
+        print(f"\nSample document 1:")
+        print(f"  ID: {doc_ids[0]}")
+        print(f"  Text: {corpus[0][:80]}...")
+
+    # Example 6: Delete by doc_id
+    print("\n6. Deleting Document")
     print("-" * 70)
 
     store.delete_by_doc_id("sample_doc")
-
     final_stats = store.get_collection_stats()
     print(f"Final vector count: {final_stats['count']:,}")
 

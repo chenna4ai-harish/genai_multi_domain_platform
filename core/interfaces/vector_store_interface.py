@@ -1,4 +1,5 @@
 """
+
 core/interfaces/vector_store_interface.py
 
 This module defines the abstract interface (contract) for all vector store
@@ -57,14 +58,19 @@ store.upsert(chunks, embeddings)
 results = store.search(query_embedding, top_k=10)
 store.delete_by_doc_id("old_doc")
 
+# Phase 2: Build BM25 index for hybrid retrieval
+corpus, doc_ids = store.get_all_documents()
+bm25_index = BM25Retrieval(corpus=corpus, doc_ids=doc_ids)
+
 References:
 -----------
 - Repository Pattern: https://martinfowler.com/eaaCatalog/repository.html
 - Vector Databases Overview: https://www.pinecone.io/learn/vector-database/
+
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 from models.metadata_models import ChunkMetadata
 
@@ -89,11 +95,13 @@ class VectorStoreInterface(ABC):
     2. Searching for similar vectors (similarity/semantic search)
     3. Filtering by metadata (combine semantic + traditional search)
     4. Managing vector lifecycle (create, update, delete)
+    5. Providing corpus access for hybrid retrieval (BM25 indexing)
 
     Core Operations (CRUD):
     -----------------------
     - Create/Update: upsert() - insert or update vectors
     - Read: search() - find similar vectors
+    - Read: get_all_documents() - retrieve corpus for BM25
     - Delete: delete_by_doc_id() - remove vectors by document
 
     Key Concepts:
@@ -103,6 +111,7 @@ class VectorStoreInterface(ABC):
     - **Similarity**: How close two vectors are (cosine, euclidean, dot product)
     - **Metadata**: Additional information stored with vectors (domain, doc_id, etc.)
     - **Upsert**: Update if exists, Insert if new (idempotent operation)
+    - **Corpus**: Collection of all documents (for BM25/hybrid retrieval)
 
     Similarity Metrics:
     -------------------
@@ -116,23 +125,20 @@ class VectorStoreInterface(ABC):
     Example Implementations:
     ------------------------
     See:
-    - core/vector_stores/chromadb_store.py (OPTION 1: Local, free)
-    - core/vector_stores/pinecone_store.py (OPTION 2: Cloud, managed)
+    - core/vectorstores/chromadb_store.py (OPTION 1: Local, free)
+    - core/vectorstores/pinecone_store.py (OPTION 2: Cloud, managed)
 
     Usage Example:
     --------------
     # This interface allows polymorphic usage:
-
     def store_and_search(store: VectorStoreInterface, chunks, embeddings, query):
         '''Works with ANY vector store implementation!'''
-
         # Store chunks
         store.upsert(chunks, embeddings)
 
         # Search
         query_emb = embedder.embed_texts([query])[0]
         results = store.search(query_emb, top_k=10)
-
         return results
 
     # Works with ChromaDB
@@ -260,7 +266,6 @@ class VectorStoreInterface(ABC):
 
         # Upsert to vector store
         store.upsert(chunks, embeddings)
-
         # Chunks are now searchable!
         """
         pass  # Subclasses MUST implement this method
@@ -293,7 +298,6 @@ class VectorStoreInterface(ABC):
             Number of top results to return
             Recommended: 5-50 for most use cases
             Range: 1-10000 (depends on vector store)
-
             More results = better recall but slower
 
         filters : Dict[str, Any], optional
@@ -314,7 +318,6 @@ class VectorStoreInterface(ABC):
         --------
         List[Dict]:
             List of result dictionaries, sorted by similarity (best first).
-
             Each dict should contain:
             - 'id': chunk_id (unique identifier)
             - 'score' or 'distance': similarity metric
@@ -537,6 +540,173 @@ class VectorStoreInterface(ABC):
         """
         pass  # Subclasses MUST implement this method
 
+    @abstractmethod
+    def get_all_documents(self) -> Tuple[List[str], List[str]]:
+        """
+        Retrieve all document texts and IDs from the vector store.
+
+        This method is REQUIRED for Phase 2 hybrid retrieval to build BM25 indexes.
+        The BM25 (sparse keyword-based) retrieval needs access to the entire corpus
+        to calculate term frequencies and document frequencies.
+
+        Purpose:
+        --------
+        Enables hybrid retrieval (dense + sparse) by providing corpus for BM25:
+        1. Retrieve all chunks from vector store
+        2. Extract chunk texts and IDs
+        3. Build BM25 index from corpus
+        4. Use BM25 index alongside vector search (hybrid)
+
+        Returns:
+        --------
+        Tuple[List[str], List[str]]:
+            Tuple of (corpus, doc_ids)
+
+            corpus : List[str]
+                List of all chunk texts in the vector store
+                Example: ["Employee benefits include...", "Health insurance covers...", ...]
+
+            doc_ids : List[str]
+                List of corresponding chunk IDs (same order as corpus)
+                Example: ["chunk-uuid-1", "chunk-uuid-2", ...]
+
+            Requirements:
+            - Both lists must have the same length
+            - Order must match (corpus[i] corresponds to doc_ids[i])
+            - Should include ALL chunks (no filtering)
+
+        Raises:
+        -------
+        RuntimeError:
+            - If retrieval operation fails
+            - If connection is lost
+            - If vector store is empty (optional - can return empty lists)
+
+        Use Cases:
+        ----------
+        1. **Building BM25 Index for Hybrid Retrieval**:
+           corpus, doc_ids = vector_store.get_all_documents()
+           bm25_index = BM25Retrieval(corpus=corpus, doc_ids=doc_ids)
+
+           # Now use hybrid retrieval
+           hybrid_retriever = HybridRetrieval(
+               vector_store=vector_store,
+               embedding_model=embedder,
+               bm25_index=bm25_index,
+               alpha=0.7  # 70% dense, 30% sparse
+           )
+
+        2. **Analytics and Monitoring**:
+           corpus, _ = vector_store.get_all_documents()
+           total_chunks = len(corpus)
+           avg_length = sum(len(text) for text in corpus) / total_chunks
+           print(f"Total chunks: {total_chunks}, Avg length: {avg_length}")
+
+        3. **Data Export/Backup**:
+           corpus, doc_ids = vector_store.get_all_documents()
+           # Export to file for backup or analysis
+
+        Implementation Guidelines:
+        --------------------------
+        1. **Pagination for Large Stores**:
+           # Don't load all at once if millions of chunks
+           all_texts = []
+           all_ids = []
+           page_size = 1000
+           offset = 0
+
+           while True:
+               batch = self.collection.get(limit=page_size, offset=offset)
+               if not batch:
+                   break
+               all_texts.extend([doc['text'] for doc in batch])
+               all_ids.extend([doc['id'] for doc in batch])
+               offset += page_size
+
+           return all_texts, all_ids
+
+        2. **Extract Chunk Text from Metadata**:
+           # Chunk text is usually stored in metadata
+           results = self.collection.get()
+           corpus = [result.metadata['chunk_text'] for result in results]
+           doc_ids = [result.id for result in results]
+           return corpus, doc_ids
+
+        3. **Handle Empty Store**:
+           if self.collection.count() == 0:
+               logger.warning("Vector store is empty")
+               return [], []
+
+        4. **Caching for Performance**:
+           # If corpus doesn't change often, cache it
+           if hasattr(self, '_corpus_cache'):
+               return self._corpus_cache
+
+           corpus, doc_ids = self._fetch_all_documents()
+           self._corpus_cache = (corpus, doc_ids)
+           return corpus, doc_ids
+
+        Performance Considerations:
+        ---------------------------
+        - This operation can be slow for large datasets (millions of chunks)
+        - Consider pagination/batching for large stores
+        - May want to cache results if corpus doesn't change frequently
+        - BM25 index building is O(N*M) where N=docs, M=avg_terms_per_doc
+
+        Example Implementation Pattern:
+        -------------------------------
+        def get_all_documents(self) -> Tuple[List[str], List[str]]:
+            # 1. Get all chunks from vector store
+            all_chunks = self.collection.get()
+
+            # 2. Extract texts and IDs
+            corpus = []
+            doc_ids = []
+
+            for chunk in all_chunks:
+                # Extract chunk_text from metadata
+                chunk_text = chunk.metadata.get('chunk_text', '')
+                if chunk_text:  # Skip empty chunks
+                    corpus.append(chunk_text)
+                    doc_ids.append(chunk.id)
+
+            logger.info(f"Retrieved {len(corpus)} documents from vector store")
+
+            return corpus, doc_ids
+
+        Example Usage:
+        --------------
+        # Initialize hybrid retrieval for Phase 2
+        vector_store = VectorStoreFactory.create_store(config, embedding_dim, metadata_fields)
+        embedder = EmbeddingFactory.create_embedder(embedding_config)
+
+        # Build BM25 index from vector store corpus
+        corpus, doc_ids = vector_store.get_all_documents()
+        print(f"Corpus size: {len(corpus)} chunks")
+
+        # Create BM25 index
+        bm25_index = BM25Retrieval(corpus=corpus, doc_ids=doc_ids)
+
+        # Create hybrid retriever (combines vector + BM25)
+        hybrid_retriever = HybridRetrieval(
+            vector_store=vector_store,
+            embedding_model=embedder,
+            bm25_index=bm25_index,
+            alpha=0.7
+        )
+
+        # Now queries use both semantic (vector) and keyword (BM25) search!
+        results = hybrid_retriever.retrieve("vacation policy", top_k=10)
+
+        Notes:
+        ------
+        - This method is only called when initializing hybrid retrieval
+        - Not called on every query (BM25 index is built once)
+        - For frequently changing data, may need to rebuild BM25 index periodically
+        - Consider lazy loading - only build BM25 when hybrid retrieval is requested
+        """
+        pass  # Subclasses MUST implement this method
+
 
 # =============================================================================
 # USAGE NOTES FOR IMPLEMENTERS
@@ -546,7 +716,7 @@ class VectorStoreInterface(ABC):
 How to Implement a New Vector Store Provider:
 ----------------------------------------------
 
-1. Create a new file: core/vector_stores/my_store.py
+1. Create a new file: core/vectorstores/my_store.py
 
 2. Import the interface:
    from core.interfaces.vector_store_interface import VectorStoreInterface
@@ -554,6 +724,7 @@ How to Implement a New Vector Store Provider:
    import numpy as np
 
 3. Create your class inheriting from VectorStoreInterface:
+
    class MyVectorStore(VectorStoreInterface):
        def __init__(self, connection_string: str, collection: str):
            # Initialize your vector store client
@@ -572,7 +743,12 @@ How to Implement a New Vector Store Provider:
            # Your deletion implementation
            pass
 
+       def get_all_documents(self) -> Tuple[List[str], List[str]]:
+           # Your corpus retrieval implementation (for BM25)
+           pass
+
 4. Register in factory: core/factories/vector_store_factory.py
+
    elif config.provider == "my_store":
        return MyVectorStore(
            connection_string=config.my_store.connection_string,
@@ -580,6 +756,7 @@ How to Implement a New Vector Store Provider:
        )
 
 5. Add config model: models/domain_config.py
+
    class MyStoreConfig(BaseModel):
        connection_string: str
        collection: str
@@ -599,6 +776,7 @@ How to Implement a New Vector Store Provider:
    - Test upsert with various batch sizes
    - Test search with and without filters
    - Test deletion (single and bulk)
+   - Test get_all_documents with empty/small/large stores
    - Test error handling (connection loss, invalid data)
 
 That's it! No changes to calling code required (config-driven architecture).

@@ -1,4 +1,5 @@
 """
+
 core/chunking/recursive_chunker.py
 
 This module implements the Recursive (Fixed-Size) Chunking strategy.
@@ -36,7 +37,6 @@ When to Use Recursive Chunking:
 ✅ Structured documents (policies, manuals, reports)
 ✅ When processing speed matters
 ✅ When you want predictable chunk sizes
-
 ❌ When documents have clear topical boundaries (use semantic chunking instead)
 ❌ When chunk coherence matters more than size uniformity
 
@@ -52,17 +52,18 @@ Disadvantages:
 - May split sentences/paragraphs awkwardly
 - No awareness of semantic boundaries
 - Fixed size may not align with natural text structure
+
 """
+
 
 
 import sys
 from pathlib import Path
-
 project_root = Path(__file__).parent.parent  # Go up two levels from config_manager.py
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from typing import List, Tuple
+from typing import List, Dict, Any
 from core.interfaces.chunking_interface import ChunkerInterface
 from models.metadata_models import ChunkMetadata
 from models.domain_config import RecursiveChunkingConfig
@@ -128,7 +129,6 @@ class RecursiveChunker(ChunkerInterface):
         -----------
         config : RecursiveChunkingConfig
             Configuration object with chunk_size and overlap settings
-
         embedding_model_name : str
             Name of the embedding model (stored in chunk metadata)
 
@@ -156,6 +156,59 @@ class RecursiveChunker(ChunkerInterface):
             f"Initialized RecursiveChunker: chunk_size={self.chunk_size}, "
             f"overlap={self.overlap}, model={self.embedding_model_name}"
         )
+
+    def get_strategy_name(self) -> str:
+        """
+        Return the name of this chunking strategy.
+
+        Required by ChunkingInterface.
+
+        Returns:
+        --------
+        str:
+            Strategy name: "recursive"
+        """
+        return "recursive"
+
+    def chunk(self, text: str, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Chunk text into fixed-size pieces with overlap (Phase 2 interface).
+
+        This method implements the ChunkingInterface.chunk() signature.
+
+        Parameters:
+        -----------
+        text : str
+            Text to chunk
+        metadata : Dict[str, Any]
+            Metadata dict with required fields:
+            - doc_id, domain, source_file_path, source_file_hash
+
+        Returns:
+        --------
+        List[Dict[str, Any]]:
+            List of dicts with 'text' and 'metadata' keys
+        """
+        # Call the existing chunk_text method
+        chunk_metadata_list = self.chunk_text(
+            text=text,
+            doc_id=metadata.get('doc_id', 'unknown'),
+            domain=metadata.get('domain', 'unknown'),
+            source_file_path=metadata.get('source_file_path', ''),
+            file_hash=metadata.get('source_file_hash', 'a' * 64),  # Default hash
+            uploader_id=metadata.get('uploader_id'),
+            page_num=metadata.get('page_num')
+        )
+
+        # Convert ChunkMetadata objects to dicts
+        chunks = []
+        for chunk_meta in chunk_metadata_list:
+            chunks.append({
+                'text': chunk_meta.chunk_text,
+                'metadata': chunk_meta
+            })
+
+        return chunks
 
     def chunk_text(
             self,
@@ -196,12 +249,11 @@ class RecursiveChunker(ChunkerInterface):
 
         Example:
         --------
-        text = "Employee benefits include 15 vacation days per year. " \\
-               "Health insurance covers medical and dental. " \\
+        text = "Employee benefits include 15 vacation days per year. " \
+               "Health insurance covers medical and dental. " \
                "401k matching up to 6% of salary."
 
         With chunk_size=50, overlap=10:
-
         Chunk 1 (0-50): "Employee benefits include 15 vacation days per ye"
         Chunk 2 (40-90): "per year. Health insurance covers medical and de"
         Chunk 3 (80-130): "and dental. 401k matching up to 6% of salary."
@@ -260,12 +312,10 @@ class RecursiveChunker(ChunkerInterface):
                     chunk_text=chunk_text,
                     char_range=(start, end),  # Exact position in original text
                     page_num=page_num,  # Optional: for paginated documents
-
                     # Provenance fields
                     uploader_id=uploader_id,
                     source_file_path=source_file_path,
                     source_file_hash=file_hash,
-
                     # Processing fields
                     embedding_model_name=self.embedding_model_name,
                     chunking_strategy="recursive",  # Identifier for this strategy
@@ -299,7 +349,6 @@ class RecursiveChunker(ChunkerInterface):
                 f"No chunks created for doc_id={doc_id}. "
                 f"Text length: {len(text)}, chunk_size: {self.chunk_size}"
             )
-            # This could happen with very short documents or unusual text
             # Return empty list rather than raising error (let caller decide)
 
         logger.info(
@@ -332,7 +381,6 @@ class RecursiveChunker(ChunkerInterface):
         --------
         text = "Hello world. This is a test. More text here."
         max_pos = 20
-
         Returns: 13 (position after "Hello world.")
 
         Usage:
@@ -365,96 +413,34 @@ class RecursiveChunker(ChunkerInterface):
 # =============================================================================
 
 if __name__ == "__main__":
-    """
-    Demonstration of RecursiveChunker usage.
-    Run this file directly: python core/chunking/recursive_chunker.py
-    """
+    import logging
+    from utils.hashing import compute_string_hash  # Use your hashing utility
 
-    # Configure logging to see debug messages
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(levelname)s - %(name)s - %(message)s'
-    )
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(name)s - %(message)s')
 
-    print("=" * 70)
-    print("RecursiveChunker Usage Examples")
-    print("=" * 70)
-
-    # Example 1: Basic chunking
-    print("\n1. Basic Recursive Chunking")
-    print("-" * 70)
-
-    sample_text = """
-    Employee benefits include 15 vacation days per year and unlimited sick leave.
-    Health insurance covers medical, dental, and vision with 80% employer contribution.
-    401k retirement plan with company matching up to 6% of salary.
-    Professional development budget of $2000 per year for courses and conferences.
-    Remote work options available with flexible scheduling.
+    # Example text
+    text = """
+    Employees receive 15 vacation days per year. Unused vacation days 
+    can be carried over to the next year. The 401k employer matching 
+    contribution is 5% of salary up to the IRS limit.
     """
 
+    # ✅ Generate valid hash from text
+    file_hash = compute_string_hash(text)
+
+    # Create metadata with valid hash
+    metadata = {
+        "doc_id": "employee_benefits_2025",
+        "domain": "hr",
+        "source_file_path": "./data/benefits.txt",
+        "source_file_hash": file_hash,  # ✅ Valid SHA-256 hash
+        "embedding_model_name": "all-MiniLM-L6-v2",
+        "chunking_strategy": "recursive"
+    }
+
+    # Create chunker and chunk
     config = RecursiveChunkingConfig(chunk_size=100, overlap=20)
     chunker = RecursiveChunker(config, embedding_model_name="all-MiniLM-L6-v2")
 
-    chunks = chunker.chunk_text(
-        text=sample_text,
-        doc_id="employee_benefits_2025",
-        domain="hr",
-        source_file_path="./docs/benefits.txt",
-        file_hash="abc123def456",
-        uploader_id="hr@company.com"
-    )
-
-    print(f"Created {len(chunks)} chunks from {len(sample_text)} characters")
-    print(f"Chunk size: {config.chunk_size}, Overlap: {config.overlap}\n")
-
-    for i, chunk in enumerate(chunks, 1):
-        print(f"Chunk {i}:")
-        print(f"  Range: {chunk.char_range}")
-        print(f"  Text: {chunk.chunk_text[:80]}...")
-        print(f"  Metadata: domain={chunk.domain}, strategy={chunk.chunking_strategy}")
-        print()
-
-    # Example 2: Different configurations
-    print("\n2. Comparing Different Chunk Sizes")
-    print("-" * 70)
-
-    configs_to_test = [
-        (300, 30, "Standard"),
-        (500, 50, "Medium"),
-        (800, 80, "Large")
-    ]
-
-    long_text = sample_text * 5  # Repeat for longer document
-
-    for chunk_size, overlap, label in configs_to_test:
-        config = RecursiveChunkingConfig(chunk_size=chunk_size, overlap=overlap)
-        chunker = RecursiveChunker(config, embedding_model_name="all-MiniLM-L6-v2")
-
-        chunks = chunker.chunk_text(
-            text=long_text,
-            doc_id=f"test_{label}",
-            domain="hr",
-            source_file_path="./test.txt",
-            file_hash="test123"
-        )
-
-        print(f"{label} ({chunk_size} chars, {overlap} overlap): {len(chunks)} chunks")
-
-    # Example 3: Error handling
-    print("\n3. Error Handling")
-    print("-" * 70)
-
-    try:
-        # This should raise ValueError (empty text)
-        chunks = chunker.chunk_text(
-            text="",
-            doc_id="empty_doc",
-            domain="hr",
-            source_file_path="./empty.txt",
-            file_hash="empty123"
-        )
-    except ValueError as e:
-        print(f"✅ Caught expected error: {e}")
-
-    print("\n" + "=" * 70)
-    print("RecursiveChunker examples completed!")
+    chunks = chunker.chunk(text, metadata)
+    print(f"✅ Created {len(chunks)} chunks with valid hash")

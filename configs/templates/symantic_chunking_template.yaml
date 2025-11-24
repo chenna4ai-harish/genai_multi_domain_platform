@@ -1,0 +1,38 @@
+name: semantic_chunking_playground
+description: Playground template using semantic chunking, OpenAI embedding, multiple retrieval strategies
+
+chunking:
+  strategy: semantic
+  chunk_size: 15
+  overlap: 2
+
+embedding:
+  provider: OpenAI
+  model_name: gpt-4o
+  api_key: "${OPENAI_API_KEY}"
+  mode: api_key
+
+retrieval:
+  strategies:
+    - dense
+    - filtering
+  dense:
+    similarity: cosine
+    top_k: 8
+  filtering:
+    fields: ["author", "topic"]
+    rules:
+      author: ["john doe", "jane doe"]
+      topic: ["leave", "payroll"]
+
+vectorstore:
+  provider: Pinecone
+  index_type: hnsw
+  collection_name: semantic_playground
+
+security:
+  allowed_file_types:
+    - pdf
+    - docx
+    - txt
+  max_file_size_mb: 20
