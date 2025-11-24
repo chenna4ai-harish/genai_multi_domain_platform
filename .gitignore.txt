@@ -1,0 +1,35 @@
+# Virtual environments
+venv/
+.env/
+.venv/
+env/
+ENV/
+*.pyenv
+
+# Python cache / compiled files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Jupyter & Notebook
+.ipynb_checkpoints/
+
+# IDE / Editor files
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Local configs & sensitive files
+.env
+*.env
