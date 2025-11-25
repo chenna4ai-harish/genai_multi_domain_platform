@@ -1,33 +1,75 @@
-# configs/global_config.yaml
-# Global default configuration for all domains
+name: global_default
+description: Global defaults for RAG system
 
-# Default chunking settings
 chunking:
-  strategy: "recursive"
-  recursive:
-    chunk_size: 500
-    overlap: 50
-  semantic:
-    similarity_threshold: 0.7
-    max_chunk_size: 1000
+  strategy: recursive
+  chunk_size: 500
+  overlap: 50
 
-# Default embedding settings
-embeddings:
-  provider: "sentence_transformers"
-  model_name: "all-MiniLM-L6-v2"
-  device: "cpu"
-  batch_size: 32
-  normalize_embeddings: true
+embedding:
+  provider: Gemini
+  model_name: gemini-1.0-pro
+  api_key: "${GEMINI_API_KEY}"
+  mode: api_key
+  project_id: "${VERTEXAI_PROJECT_ID}"
 
-# Default retrieval settings
 retrieval:
-  strategy: "hybrid"
-  alpha: 0.7
+  strategies:
+    - hybrid
+    - llm_rerank
+    - filtering
+  hybrid:
+    alpha: 0.7
+    dense_provider: sentence_transformers
+    sparse_provider: bm25
+  llm_rerank:
+    provider: openai
+    model_name: gpt-4o
+    api_key: "${OPENAI_API_KEY}"
+  filtering:
+    fields: ["author", "doc_type", "upload_date"]
+    rules:
+      author: ["alice", "bob"]
+      doc_type: ["policy", "faq"]
+      upload_date: ["2024-01-01:2024-12-31"]
   top_k: 10
-  enable_metadata_filtering: true
-  normalize_scores: true
 
-# Default security settings
+vectorstore:
+  provider: ChromaDB
+  index_type: hnsw
+  collection_name: default_collection
+
 security:
-  allowed_file_types: ["pdf", "docx", "txt", "csv"]
-  max_file_size_mb: 50
+  allowed_file_types:
+    - pdf
+    - docx
+    - txt
+  max_file_size_mb: 20
+
+
+#
+#Define a core schema for metadata (e.g., via Pydantic or dataclass) listing standard fields:
+#
+#doc_id: Unique document ID
+#
+#chunk_id: Unique chunk ID
+#
+#title
+#
+#author
+#
+#domain
+#
+#doc_type
+#
+#tags
+#
+#upload_date
+#
+#source_file
+#
+#version
+#
+#deprecated (bool)
+#
+#deprecated_date (date)

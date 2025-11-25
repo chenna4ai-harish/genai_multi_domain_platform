@@ -1,12 +1,13 @@
 """
+
 core/interfaces/chunking_interface.py
 
-This module defines the abstract interfaces (contract) for all chunking strategies
+This module defines the abstract interface (contract) for all chunking strategies
 in the multi-domain document intelligence platform.
 
 Purpose:
 --------
-Defines a standard interfaces that ALL chunking implementations must follow.
+Defines a standard interface that ALL chunking implementations must follow.
 This enables the Factory Pattern and config-driven architecture, allowing you
 to swap chunking strategies without changing any calling code.
 
@@ -30,7 +31,7 @@ Example Usage:
 # Factory creates the right chunker based on config
 chunker: ChunkerInterface = ChunkingFactory.create_chunker(config)
 
-# Caller doesn't care if it's recursive or semantic - interfaces is the same!
+# Caller doesn't care if it's recursive or semantic - interface is the same!
 chunks = chunker.chunk_text(text, doc_id, domain, file_path, file_hash)
 
 Alternative: Why Not Just Use Duck Typing?
@@ -48,6 +49,7 @@ References:
 -----------
 - Python ABC documentation: https://docs.python.org/3/library/abc.html
 - PEP 3119 (Introducing ABCs): https://www.python.org/dev/peps/pep-3119/
+
 """
 
 from abc import ABC, abstractmethod
@@ -57,7 +59,7 @@ from models.metadata_models import ChunkMetadata
 
 class ChunkerInterface(ABC):
     """
-    Abstract base class defining the interfaces for document chunking strategies.
+    Abstract base class defining the interface for document chunking strategies.
 
     All chunking implementations (RecursiveChunker, SemanticChunker, etc.)
     MUST inherit from this class and implement all abstract methods.
@@ -95,8 +97,7 @@ class ChunkerInterface(ABC):
 
     Usage Example:
     --------------
-    # This interfaces allows polymorphic usage:
-
+    # This interface allows polymorphic usage:
     def process_document(text: str, chunker: ChunkerInterface) -> List[ChunkMetadata]:
         '''Process document with ANY chunking strategy.'''
         chunks = chunker.chunk_text(
@@ -205,7 +206,8 @@ class ChunkerInterface(ABC):
         Example Implementation Pattern:
         -------------------------------
         def chunk_text(self, text, doc_id, domain, source_file_path,
-                       file_hash, uploader_id=None, page_num=None):
+                      file_hash, uploader_id=None, page_num=None):
+
             # 1. Validate inputs
             if not text or not text.strip():
                 raise ValueError("Text cannot be empty")
@@ -251,6 +253,39 @@ class ChunkerInterface(ABC):
         """
         pass  # Subclasses MUST implement this method
 
+    @abstractmethod
+    def get_strategy_name(self) -> str:
+        """
+        Return the name of this chunking strategy.
+
+        This method is used for:
+        - Logging and debugging
+        - Metadata tracking (stored in chunk metadata)
+        - Configuration validation
+        - Performance profiling
+
+        Returns:
+        --------
+        str:
+            Strategy name identifier
+            Examples: "recursive", "semantic", "sliding_window"
+
+        Implementation:
+        ---------------
+        Simply return the strategy name as a string constant:
+
+        def get_strategy_name(self) -> str:
+            return "recursive"  # or "semantic", etc.
+
+        Note:
+        -----
+        This should match the strategy name used in:
+        - Configuration files (YAML)
+        - Factory registration
+        - ChunkMetadata.chunking_strategy field
+        """
+        pass  # Subclasses MUST implement this method
+
 
 # =============================================================================
 # USAGE NOTES FOR IMPLEMENTERS
@@ -262,38 +297,51 @@ How to Implement a New Chunking Strategy:
 
 1. Create a new file: core/chunking/my_chunker.py
 
-2. Import the interfaces:
+2. Import the interface:
    from core.interfaces.chunking_interface import ChunkerInterface
    from models.metadata_models import ChunkMetadata
 
 3. Create your class inheriting from ChunkerInterface:
+
    class MyChunker(ChunkerInterface):
-       def __init__(self, config: MyChunkingConfig):
+       def __init__(self, config: MyChunkingConfig, embedding_model_name: str):
            # Initialize your chunker with config
-           pass
+           self.config = config
+           self.embedding_model_name = embedding_model_name
 
        def chunk_text(self, text, doc_id, domain, source_file_path,
-                      file_hash, uploader_id=None, page_num=None):
+                     file_hash, uploader_id=None, page_num=None):
            # Your implementation here
            chunks = []
            # ... your chunking logic ...
            return chunks
 
+       def get_strategy_name(self) -> str:
+           return "my_strategy"
+
 4. Register in factory: core/factories/chunking_factory.py
-   elif config.strategy == "my_strategy":
-       return MyChunker(config.my_strategy)
+
+   _available_chunkers = {
+       "recursive": RecursiveChunker,
+       "semantic": SemanticChunker,
+       "my_strategy": MyChunker,  # Add your chunker
+   }
 
 5. Add config model: models/domain_config.py
+
    class MyChunkingConfig(BaseModel):
+       strategy: str = "my_strategy"
        # Your config parameters
        pass
 
 6. Update ChunkingConfig:
+
    class ChunkingConfig(BaseModel):
        strategy: str = "recursive"  # Add "my_strategy" to options
        my_strategy: MyChunkingConfig = Field(default_factory=MyChunkingConfig)
 
 7. Use in YAML:
+
    chunking:
      strategy: "my_strategy"
      my_strategy:

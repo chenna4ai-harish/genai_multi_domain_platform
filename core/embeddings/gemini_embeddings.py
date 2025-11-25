@@ -1,4 +1,5 @@
 """
+
 core/embeddings/gemini_embeddings.py
 
 This module implements the Google Gemini embedding provider (OPTION 2).
@@ -48,7 +49,6 @@ When to Use Gemini Embeddings:
 ✅ Multilingual applications (100+ languages)
 ✅ When you don't want to manage infrastructure
 ✅ Cloud-native applications
-
 ❌ MVP/development (use free Sentence-Transformers)
 ❌ Privacy-sensitive data (stays on Google servers)
 ❌ Very high volume with tight budgets
@@ -70,6 +70,7 @@ References:
 - Documentation: https://ai.google.dev/docs/embeddings
 - API Reference: https://ai.google.dev/api/python/google/generativeai
 - Pricing: https://ai.google.dev/pricing
+
 """
 
 from typing import List
@@ -95,9 +96,8 @@ class GeminiEmbeddings(EmbeddingInterface):
     api_key : str
         Google API key for Gemini API
         Get one at: https://makersuite.google.com/app/apikey
-
         Best practice: Store in environment variable
-        export GEMINI_API_KEY="your-key"
+            export GEMINI_API_KEY="your-key"
         Then: api_key=os.getenv("GEMINI_API_KEY")
 
     model_name : str
@@ -105,7 +105,6 @@ class GeminiEmbeddings(EmbeddingInterface):
         Options:
         - "models/embedding-001" (768-dim, latest)
         - "gemini-embedding-001" (same as above, alias)
-
         Default: "models/embedding-001"
 
     batch_size : int
@@ -119,7 +118,6 @@ class GeminiEmbeddings(EmbeddingInterface):
         - "RETRIEVAL_DOCUMENT": For indexing (default for our use case)
         - "RETRIEVAL_QUERY": For search queries
         - "SEMANTIC_SIMILARITY": For similarity tasks
-
         Default: "RETRIEVAL_DOCUMENT"
 
     Example Usage:
@@ -251,7 +249,6 @@ class GeminiEmbeddings(EmbeddingInterface):
             raise ValueError("texts cannot be empty")
 
         valid_texts = [t for t in texts if t and t.strip()]
-
         if not valid_texts:
             raise ValueError("All texts are empty after filtering")
 
@@ -278,19 +275,16 @@ class GeminiEmbeddings(EmbeddingInterface):
             try:
                 # Call Gemini API
                 start = time.time()
-
                 result = genai.embed_content(
                     model=self.model_name,
                     content=batch,
                     task_type=self.task_type
                 )
-
                 api_time = time.time() - start
 
                 # Extract embeddings from response
                 # API returns dict with 'embedding' key containing list of values
                 batch_embeddings = [emb['values'] for emb in result['embedding']]
-
                 all_embeddings.extend(batch_embeddings)
 
                 logger.debug(
@@ -333,12 +327,31 @@ class GeminiEmbeddings(EmbeddingInterface):
         """
         Return the Gemini model name.
 
+        This is stored in chunk metadata for provenance tracking.
+
         Returns:
         --------
         str:
-            Model name (e.g., "models/embedding-001")
+            Model name/identifier
+            Example: "models/embedding-001"
         """
         return self.model_name
+
+    def get_embedding_dimension(self) -> int:
+        """
+        Get the dimension of embeddings produced by this model.
+
+        Useful for:
+        - Configuring vector stores (Pinecone needs dimension upfront)
+        - Validating embedding shapes
+        - Documentation and logging
+
+        Returns:
+        --------
+        int:
+            Embedding dimension (768 for Gemini)
+        """
+        return self.embedding_dim
 
 
 # =============================================================================
@@ -354,7 +367,6 @@ if __name__ == "__main__":
     - Set GEMINI_API_KEY environment variable
     - pip install google-generativeai
     """
-
     import os
 
     logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
@@ -393,6 +405,7 @@ if __name__ == "__main__":
     print(f"Output: {embeddings.shape} (texts × dimensions)")
     print(f"Data type: {embeddings.dtype}")
     print(f"First embedding (first 5 values): {embeddings[0][:5]}")
+    print(f"Embedding dimension: {embedder.get_embedding_dimension()}")
 
     # Example 2: Semantic similarity with Gemini
     print("\n2. Computing Similarity with Gemini Embeddings")
@@ -416,6 +429,8 @@ if __name__ == "__main__":
     for doc, sim in zip(documents, similarities):
         print(f"  {sim:.3f} - {doc}")
 
+    print(f"\nMost relevant: {documents[similarities.argmax()]}")
+
     # Example 3: Batch processing
     print("\n3. Batch Processing Performance")
     print("-" * 70)
@@ -432,6 +447,34 @@ if __name__ == "__main__":
     print(f"Time: {total_time:.2f}s")
     print(f"Throughput: {len(test_texts) / total_time:.0f} texts/sec")
     print(f"Output shape: {batch_embeddings.shape}")
+
+    # Example 4: Different task types
+    print("\n4. Task-Specific Embeddings")
+    print("-" * 70)
+
+    # For document indexing
+    doc_embedder = GeminiEmbeddings(
+        api_key=api_key,
+        task_type="RETRIEVAL_DOCUMENT"
+    )
+
+    # For queries
+    query_embedder = GeminiEmbeddings(
+        api_key=api_key,
+        task_type="RETRIEVAL_QUERY"
+    )
+
+    document = ["The Python programming language was created in 1991"]
+    query = ["Who created Python?"]
+
+    doc_emb = doc_embedder.embed_texts(document)
+    query_emb = query_embedder.embed_texts(query)
+
+    similarity = cosine_similarity(query_emb, doc_emb)[0][0]
+
+    print(f"Document (RETRIEVAL_DOCUMENT): {document[0]}")
+    print(f"Query (RETRIEVAL_QUERY): {query[0]}")
+    print(f"Similarity: {similarity:.3f}")
 
     print("\n" + "=" * 70)
     print("Gemini Embeddings examples completed!")

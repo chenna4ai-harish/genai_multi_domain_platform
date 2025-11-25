@@ -1,43 +1,76 @@
 """
+
 core/factories/embedding_factory.py
 
 This module implements the Factory Pattern for creating embedding provider instances.
 
-Purpose:
---------
-Enables config-driven embedding provider selection. Switch between local
-Sentence-Transformers and cloud APIs (Gemini, OpenAI) by just changing YAML config.
+What is the Embedding Factory?
+-------------------------------
+The EmbeddingFactory creates embedding provider instances (e.g., Sentence-Transformers,
+Gemini, OpenAI) based on configuration without requiring calling code to know about
+specific implementations.
 
-Factory Pattern Benefits:
--------------------------
-- Abstracts away provider-specific instantiation logic
-- Handles environment variable reading (API keys)
-- Provides clear error messages for missing dependencies
-- Makes adding new providers easy (just add elif branch)
+Why Use a Factory for Embeddings?
+----------------------------------
+1. **Provider Abstraction**: Switch embedding providers via config, not code changes
+2. **Configuration-Driven**: All embedding settings in YAML config files
+3. **Environment Handling**: Automatically handles API keys from environment variables
+4. **Easy Testing**: Mock factories in tests without touching real providers
+5. **Extensibility**: Add new providers by registering, no changes to existing code
 
-Example:
---------
+How This Enables Multi-Provider Architecture:
+----------------------------------------------
 Instead of:
     if config.provider == "sentence_transformers":
-        embedder = SentenceTransformerEmbeddings(...)
+        embedder = SentenceTransformerEmbeddings(model, device, batch_size)
     elif config.provider == "gemini":
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise ValueError("...")
-        embedder = GeminiEmbeddings(api_key, ...)
+        embedder = GeminiEmbeddings(api_key, model)
+    # ... many more providers
 
 You write:
     embedder = EmbeddingFactory.create_embedder(config)
 
-Much cleaner! And adding a new provider only requires updating the factory.
+Benefits:
+- Calling code doesn't know which provider is used
+- Adding new providers only requires updating the factory
+- Configuration changes don't require code deployment
+- All providers implement EmbeddingInterface (consistent API)
+
+Example Usage:
+--------------
+# From domain config
+config_mgr = ConfigManager()
+domain_config = config_mgr.load_domain_config("hr")
+embedder = EmbeddingFactory.create_embedder(domain_config.embeddings)
+
+# From dict config
+config = {
+    "provider": "sentence_transformers",
+    "model_name": "all-MiniLM-L6-v2",
+    "device": "cuda",
+    "batch_size": 32
+}
+embedder = EmbeddingFactory.create_embedder(config)
+
+# Use embedder (same interface regardless of provider!)
+texts = ["Hello world", "AI is powerful"]
+embeddings = embedder.embed_texts(texts)
+
+References:
+-----------
+- Factory Pattern: https://refactoring.guru/design-patterns/factory-method
+- Embedding Providers: See core/embeddings/ directory
+
 """
-from typing import List
-from core.interfaces.embedding_interface import EmbeddingInterface
+
+import os
+import logging
+from typing import Union, Dict, Any
+
+# Import embedding implementations
 from core.embeddings.sentence_transformer_embeddings import SentenceTransformerEmbeddings
 from core.embeddings.gemini_embeddings import GeminiEmbeddings
-from models.domain_config import EmbeddingConfig
-import logging
-import os
+from core.interfaces.embedding_interface import EmbeddingInterface
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -48,150 +81,270 @@ class EmbeddingFactory:
     Factory for creating embedding provider instances based on configuration.
 
     Supported Providers:
-    --------------------
-    - "sentence_transformers": Local Sentence-Transformers models (free, no API key)
-    - "gemini": Google Gemini API embeddings (requires GEMINI_API_KEY)
+    - sentence_transformers: Local embeddings (HuggingFace Sentence-Transformers)
+    - gemini: Google Gemini API embeddings
 
-    Future Providers (easy to add):
-    --------------------------------
-    - "openai": OpenAI embeddings (requires OPENAI_API_KEY)
-    - "cohere": Cohere embeddings (requires COHERE_API_KEY)
-    - "azure_openai": Azure OpenAI embeddings
-    - "custom": Your own custom embedding endpoint
-
-    API Key Management:
-    -------------------
-    The factory automatically reads API keys from environment variables:
-    - GEMINI_API_KEY for Google Gemini
-    - OPENAI_API_KEY for OpenAI (when implemented)
-    - etc.
-
-    This keeps secrets out of code and config files (security best practice).
-
-    Example Usage:
-    --------------
-    from models.domain_config import EmbeddingConfig
-    import os
-
-    # Sentence-Transformers (no API key needed)
-    config = EmbeddingConfig(
-        provider="sentence_transformers",
-        model_name="all-MiniLM-L6-v2"
-    )
-    embedder = EmbeddingFactory.create_embedder(config)
-
-    # Gemini (reads GEMINI_API_KEY from environment)
-    os.environ["GEMINI_API_KEY"] = "your-key-here"
-    config = EmbeddingConfig(
-        provider="gemini",
-        model_name="models/embedding-001"
-    )
-    embedder = EmbeddingFactory.create_embedder(config)
+    All providers implement EmbeddingInterface for consistency.
     """
 
+    # Registry of available embedding providers
+    _available_providers = {
+        "sentence_transformers": SentenceTransformerEmbeddings,
+        "gemini": GeminiEmbeddings,
+        # Add new providers here as you implement them:
+        # "openai": OpenAIEmbeddings,
+        # "huggingface": HuggingFaceEmbeddings,
+        # "cohere": CohereEmbeddings,
+    }
+
     @staticmethod
-    def create_embedder(config: EmbeddingConfig) -> EmbeddingInterface:
+    def create_embedder(
+            config: Union[Dict[str, Any], Any]
+    ) -> EmbeddingInterface:
         """
-        Create and return an embedder instance based on configuration.
+        Create an embedding provider instance based on configuration.
+
+        This method:
+        1. Extracts the provider from config
+        2. Validates the provider is supported
+        3. Extracts provider-specific parameters
+        4. Handles API keys from environment variables
+        5. Instantiates the embedder with correct parameters
 
         Parameters:
         -----------
-        config : EmbeddingConfig
-            Embedding configuration from domain YAML
-            Contains:
-            - provider: "sentence_transformers" or "gemini"
-            - model_name: Model identifier
-            - device: "cpu", "cuda", or "mps" (for local models)
-            - batch_size: Batch size for encoding
-            - normalize_embeddings: Whether to normalize
+        config : Union[Dict, Any]
+            Configuration object or dict with embedding parameters
+            Required fields:
+            - provider: str ("sentence_transformers", "gemini", etc.)
+
+            Common fields:
+            - model_name: str (model identifier)
+
+            Provider-specific fields:
+            For sentence_transformers:
+            - device: str ("cpu", "cuda", "mps") - default: "cpu"
+            - batch_size: int - default: 32
+            - normalize: bool - default: True
+
+            For gemini:
+            - api_key: str (optional, reads from GEMINI_API_KEY env var)
+            - batch_size: int - default: 32
+            - task_type: str - default: "RETRIEVAL_DOCUMENT"
 
         Returns:
         --------
         EmbeddingInterface:
-            Concrete embedder implementation
-            Guaranteed to implement embed_texts() and get_model_name()
+            Instantiated embedder implementing EmbeddingInterface
 
         Raises:
         -------
         ValueError:
-            - If provider is not recognized
-            - If required API key is missing (for cloud providers)
-            - If required configuration is missing
-        RuntimeError:
-            - If embedder initialization fails
+            If provider is missing or unsupported
+            If required parameters are missing (e.g., API keys)
+            If parameters are invalid
 
         Example:
         --------
-        config = EmbeddingConfig(provider="sentence_transformers")
+        # Sentence-Transformers (local)
+        config = {
+            "provider": "sentence_transformers",
+            "model_name": "all-MiniLM-L6-v2",
+            "device": "cuda",
+            "batch_size": 32,
+            "normalize": True
+        }
         embedder = EmbeddingFactory.create_embedder(config)
 
-        # Use embedder (works with any provider!)
-        texts = ["Hello", "World"]
-        embeddings = embedder.embed_texts(texts)
+        # Gemini (cloud API)
+        config = {
+            "provider": "gemini",
+            "model_name": "models/embedding-001"
+        }
+        embedder = EmbeddingFactory.create_embedder(config)
         """
-        provider = config.provider.lower()
+        # Step 1: Extract provider from config (support both Pydantic and dict)
+        if isinstance(config, dict):
+            provider = config.get("provider")
+        else:
+            provider = getattr(config, "provider", None)
 
-        logger.debug(
-            f"Creating embedder: provider='{provider}', "
-            f"model='{config.model_name}'"
-        )
-
-        # Factory logic: Switch on provider and instantiate appropriate class
-
-        if provider == "sentence_transformers":
-            # OPTION 1: Local Sentence-Transformers (free, no API key)
-            logger.info(
-                f"Creating SentenceTransformerEmbeddings: "
-                f"model={config.model_name}, device={config.device}"
+        if not provider:
+            raise ValueError(
+                "Embedding config must specify a 'provider' field. "
+                f"Available providers: {list(EmbeddingFactory._available_providers.keys())}"
             )
 
-            return SentenceTransformerEmbeddings(
-                model_name=config.model_name,
-                device=config.device,
-                batch_size=config.batch_size,
-                normalize=config.normalize_embeddings
+        provider = provider.lower()
+        logger.info(f"Creating embedder with provider: {provider}")
+
+        # Step 2: Validate provider is supported
+        embedder_cls = EmbeddingFactory._available_providers.get(provider)
+        if not embedder_cls:
+            raise ValueError(
+                f"Unknown embedding provider: '{provider}'. "
+                f"Available providers: {list(EmbeddingFactory._available_providers.keys())}"
             )
 
-        elif provider == "gemini":
-            # OPTION 2: Google Gemini API (requires API key)
-            logger.info(
-                f"Creating GeminiEmbeddings: model={config.model_name}"
+        # Step 3: Extract common parameters
+        if isinstance(config, dict):
+            model_name = config.get("model_name")
+        else:
+            model_name = getattr(config, "model_name", None)
+
+        if not model_name:
+            raise ValueError(
+                f"Embedding config must specify 'model_name' for provider '{provider}'"
             )
 
-            # Read API key from environment
-            api_key = os.getenv("GEMINI_API_KEY")
-            if not api_key:
-                raise ValueError(
-                    "GEMINI_API_KEY environment variable is required for Gemini provider.\n"
-                    "Get your API key at: https://makersuite.google.com/app/apikey\n"
-                    "Set it with: export GEMINI_API_KEY='your-key-here'"
+        # Step 4: Instantiate embedder based on provider
+        try:
+            if provider == "sentence_transformers":
+                # Extract Sentence-Transformers specific parameters
+                if isinstance(config, dict):
+                    device = config.get("device", "cpu")
+                    batch_size = config.get("batch_size", 32)
+                    normalize = config.get("normalize", True)
+                else:
+                    device = getattr(config, "device", "cpu")
+                    batch_size = getattr(config, "batch_size", 32)
+                    normalize = getattr(config, "normalize", True)
+
+                embedder = SentenceTransformerEmbeddings(
+                    model_name=model_name,
+                    device=device,
+                    batch_size=batch_size,
+                    normalize=normalize
                 )
 
-            return GeminiEmbeddings(
-                api_key=api_key,
-                model_name=config.model_name,
-                batch_size=config.batch_size
+                logger.info(
+                    f"Created SentenceTransformerEmbeddings: "
+                    f"model={model_name}, device={device}, "
+                    f"batch_size={batch_size}, normalize={normalize}"
+                )
+
+            elif provider == "gemini":
+                # Get API key from environment or config
+                if isinstance(config, dict):
+                    api_key = config.get("api_key") or os.getenv("GEMINI_API_KEY")
+                    batch_size = config.get("batch_size", 32)
+                    task_type = config.get("task_type", "RETRIEVAL_DOCUMENT")
+                else:
+                    api_key = getattr(config, "api_key", None) or os.getenv("GEMINI_API_KEY")
+                    batch_size = getattr(config, "batch_size", 32)
+                    task_type = getattr(config, "task_type", "RETRIEVAL_DOCUMENT")
+
+                if not api_key:
+                    raise ValueError(
+                        "GEMINI_API_KEY is required for Gemini embeddings. "
+                        "Set environment variable: export GEMINI_API_KEY='your-key' "
+                        "or provide 'api_key' in config. "
+                        "Get key at: https://makersuite.google.com/app/apikey"
+                    )
+
+                embedder = GeminiEmbeddings(
+                    api_key=api_key,
+                    model_name=model_name,
+                    batch_size=batch_size,
+                    task_type=task_type
+                )
+
+                logger.info(
+                    f"Created GeminiEmbeddings: "
+                    f"model={model_name}, batch_size={batch_size}, "
+                    f"task_type={task_type}"
+                )
+
+            # Add more providers here as you implement them
+            # elif provider == "openai":
+            #     api_key = config.get("api_key") or os.getenv("OPENAI_API_KEY")
+            #     if not api_key:
+            #         raise ValueError("OPENAI_API_KEY required")
+            #     embedder = OpenAIEmbeddings(api_key=api_key, model_name=model_name)
+
+            else:
+                # For future custom providers
+                # Assume they follow pattern: __init__(model_name, **kwargs)
+                raise ValueError(
+                    f"Provider '{provider}' is registered but not yet implemented. "
+                    f"Please add instantiation logic in EmbeddingFactory.create_embedder()"
+                )
+
+            return embedder
+
+        except Exception as e:
+            logger.error(
+                f"Failed to create embedder with provider '{provider}': {e}"
             )
-
-        # TO ADD OpenAI (example):
-        # elif provider == "openai":
-        #     api_key = os.getenv("OPENAI_API_KEY")
-        #     if not api_key:
-        #         raise ValueError("OPENAI_API_KEY required")
-        #     return OpenAIEmbeddings(
-        #         api_key=api_key,
-        #         model_name=config.model_name
-        #     )
-
-        else:
-            # Unknown provider - provide helpful error
-            supported_providers = ["sentence_transformers", "gemini"]
             raise ValueError(
-                f"Unknown embedding provider: '{provider}'\n"
-                f"Supported providers: {supported_providers}\n"
-                f"Check your domain config YAML file.\n"
-                f"To add a new provider, update EmbeddingFactory.create_embedder()"
+                f"Failed to instantiate embedder for provider '{provider}'. "
+                f"Error: {e}"
             )
+
+    @staticmethod
+    def get_available_providers() -> list:
+        """
+        Get list of available embedding providers.
+
+        Useful for:
+        - Validation
+        - UI dropdowns
+        - Documentation
+        - CLI help text
+
+        Returns:
+        --------
+        list:
+            List of provider names
+            Example: ["sentence_transformers", "gemini"]
+        """
+        return list(EmbeddingFactory._available_providers.keys())
+
+    @staticmethod
+    def register_provider(name: str, embedder_class: type):
+        """
+        Register a new embedding provider (for extensibility).
+
+        This allows adding custom embedding providers at runtime
+        without modifying the factory code.
+
+        Parameters:
+        -----------
+        name : str
+            Provider name (will be lowercased)
+        embedder_class : type
+            Embedder class implementing EmbeddingInterface
+
+        Raises:
+        -------
+        ValueError:
+            If embedder_class doesn't implement required methods
+
+        Example:
+        --------
+        # Register custom embedder
+        EmbeddingFactory.register_provider("custom", CustomEmbeddings)
+
+        # Now can use it
+        config = {"provider": "custom", "model_name": "custom-model"}
+        embedder = EmbeddingFactory.create_embedder(config)
+        """
+        name = name.lower()
+
+        # Validate that class implements EmbeddingInterface methods
+        required_methods = ["embed_texts", "get_model_name"]
+        for method in required_methods:
+            if not hasattr(embedder_class, method):
+                raise ValueError(
+                    f"Embedder class must implement '{method}' method "
+                    f"to be registered (EmbeddingInterface)"
+                )
+
+        if name in EmbeddingFactory._available_providers:
+            logger.warning(f"Overwriting existing provider: {name}")
+
+        EmbeddingFactory._available_providers[name] = embedder_class
+        logger.info(f"Registered embedding provider: {name}")
 
 
 # =============================================================================
@@ -203,98 +356,123 @@ if __name__ == "__main__":
     Demonstration of EmbeddingFactory usage.
     Run: python core/factories/embedding_factory.py
     """
-
-    import logging
-    from models.domain_config import EmbeddingConfig
-    import numpy as np
-
     logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
     print("=" * 70)
     print("EmbeddingFactory Usage Examples")
     print("=" * 70)
 
-    # Example 1: Creating Sentence-Transformers embedder
-    print("\n1. Creating Sentence-Transformers Embedder")
+    # Example 1: Create Sentence-Transformers embedder from dict config
+    print("\n1. Sentence-Transformers Embedder from Dict Config")
     print("-" * 70)
 
-    st_config = EmbeddingConfig(
-        provider="sentence_transformers",
-        model_name="all-MiniLM-L6-v2",
-        device="cpu",
-        batch_size=32,
-        normalize_embeddings=True
-    )
+    st_config = {
+        "provider": "sentence_transformers",
+        "model_name": "all-MiniLM-L6-v2",
+        "device": "cpu",
+        "batch_size": 32,
+        "normalize": True
+    }
 
-    embedder = EmbeddingFactory.create_embedder(st_config)
+    st_embedder = EmbeddingFactory.create_embedder(st_config)
 
-    print(f"Created: {type(embedder).__name__}")
-    print(f"Model: {embedder.get_model_name()}")
-    print(f"Interface: {isinstance(embedder, EmbeddingInterface)}")
+    print(f"Created: {st_embedder.__class__.__name__}")
+    print(f"Model: {st_embedder.get_model_name()}")
+    print(f"Dimension: {st_embedder.get_embedding_dimension()}")
 
-    # Test embedding
-    texts = ["Hello world", "Factory pattern rocks"]
-    embeddings = embedder.embed_texts(texts)
-    print(f"Embeddings shape: {embeddings.shape}")
+    # Test embedding generation
+    texts = ["Hello world", "AI is powerful"]
+    embeddings = st_embedder.embed_texts(texts)
+    print(f"Generated embeddings: shape={embeddings.shape}")
 
-    # Example 2: Creating Gemini embedder (if API key available)
-    print("\n2. Creating Gemini Embedder")
+    # Example 2: Create Gemini embedder (if API key is set)
+    print("\n2. Gemini Embedder from Dict Config")
     print("-" * 70)
 
-    if os.getenv("GEMINI_API_KEY"):
-        gemini_config = EmbeddingConfig(
-            provider="gemini",
-            model_name="models/embedding-001",
-            batch_size=32
-        )
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    if gemini_api_key:
+        gemini_config = {
+            "provider": "gemini",
+            "model_name": "models/embedding-001",
+            "batch_size": 32
+        }
 
-        try:
-            embedder = EmbeddingFactory.create_embedder(gemini_config)
-            print(f"Created: {type(embedder).__name__}")
-            print(f"Model: {embedder.get_model_name()}")
+        gemini_embedder = EmbeddingFactory.create_embedder(gemini_config)
 
-            # Test embedding
-            embeddings = embedder.embed_texts(texts)
-            print(f"Embeddings shape: {embeddings.shape}")
-        except Exception as e:
-            print(f"Failed to create Gemini embedder: {e}")
+        print(f"Created: {gemini_embedder.__class__.__name__}")
+        print(f"Model: {gemini_embedder.get_model_name()}")
+        print(f"Dimension: {gemini_embedder.get_embedding_dimension()}")
+
+        # Test embedding generation
+        embeddings = gemini_embedder.embed_texts(texts)
+        print(f"Generated embeddings: shape={embeddings.shape}")
     else:
-        print("GEMINI_API_KEY not set, skipping Gemini example")
+        print("⚠️  GEMINI_API_KEY not set. Skipping Gemini example.")
         print("Set it with: export GEMINI_API_KEY='your-key'")
 
-    # Example 3: Polymorphism
-    print("\n3. Demonstrating Polymorphism")
+    # Example 3: List available providers
+    print("\n3. Available Providers")
     print("-" * 70)
 
+    providers = EmbeddingFactory.get_available_providers()
+    print(f"Available providers: {providers}")
 
-    def embed_with_any_provider(config: EmbeddingConfig, texts: List[str]):
-        """Works with ANY embedding provider!"""
-        embedder = EmbeddingFactory.create_embedder(config)
-        embeddings = embedder.embed_texts(texts)
-        print(f"Provider: {config.provider}")
-        print(f"Model: {embedder.get_model_name()}")
-        print(f"Shape: {embeddings.shape}")
-        return embeddings
-
-
-    test_texts = ["Python is great", "AI is powerful"]
-
-    # Works with Sentence-Transformers
-    print("Using Sentence-Transformers:")
-    embed_with_any_provider(st_config, test_texts)
-
-    print("\n✅ Same function works with different providers!")
-
-    # Example 4: Error handling
-    print("\n4. Error Handling")
+    # Example 4: Error handling - unknown provider
+    print("\n4. Error Handling - Unknown Provider")
     print("-" * 70)
 
     try:
-        bad_config = EmbeddingConfig(provider="nonexistent")
-        embedder = EmbeddingFactory.create_embedder(bad_config)
+        invalid_config = {
+            "provider": "unknown_provider",
+            "model_name": "some-model"
+        }
+        EmbeddingFactory.create_embedder(invalid_config)
     except ValueError as e:
-        print(f"✅ Caught expected error:")
-        print(f"   {str(e).split(chr(10))[0]}")  # First line only
+        print(f"✅ Caught expected error: {e}")
+
+    # Example 5: Error handling - missing model_name
+    print("\n5. Error Handling - Missing Model Name")
+    print("-" * 70)
+
+    try:
+        invalid_config = {
+            "provider": "sentence_transformers"
+            # Missing model_name
+        }
+        EmbeddingFactory.create_embedder(invalid_config)
+    except ValueError as e:
+        print(f"✅ Caught expected error: {e}")
+
+    # Example 6: Provider-agnostic code
+    print("\n6. Provider-Agnostic Usage Pattern")
+    print("-" * 70)
+
+    # This code works with ANY provider!
+    configs_to_test = [
+        {
+            "provider": "sentence_transformers",
+            "model_name": "all-MiniLM-L6-v2",
+            "device": "cpu"
+        }
+    ]
+
+    # Add Gemini if API key is available
+    if gemini_api_key:
+        configs_to_test.append({
+            "provider": "gemini",
+            "model_name": "models/embedding-001"
+        })
+
+    test_text = ["Machine learning transforms industries"]
+
+    for config in configs_to_test:
+        embedder = EmbeddingFactory.create_embedder(config)
+        embedding = embedder.embed_texts(test_text)
+
+        print(f"\nProvider: {config['provider']}")
+        print(f"  Model: {embedder.get_model_name()}")
+        print(f"  Dimension: {embedder.get_embedding_dimension()}")
+        print(f"  Embedding shape: {embedding.shape}")
 
     print("\n" + "=" * 70)
     print("EmbeddingFactory examples completed!")

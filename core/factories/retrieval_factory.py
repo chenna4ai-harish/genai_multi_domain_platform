@@ -1,83 +1,93 @@
 """
+
 core/factories/retrieval_factory.py
 
-This module implements the Factory Pattern for creating retrieval strategy instances.
+Factory for creating retrieval strategy instances based on configuration.
 
-What is Retrieval?
-------------------
-Retrieval is the process of finding relevant documents/chunks for a given query.
-Different retrieval strategies combine semantic search (embeddings) with keyword
-search (BM25, TF-IDF) in various ways to optimize relevance.
+What is This Factory?
+----------------------
+The RetrievalFactory creates the appropriate retrieval strategy based on your
+domain configuration. It's part of the Factory Pattern that enables swapping
+retrieval methods WITHOUT changing any calling code.
 
-Retrieval Strategies:
----------------------
-1. **Hybrid** (Dense + Sparse):
-   - Combines semantic similarity (vector search) with keyword matching (BM25)
-   - Uses alpha parameter to weight the combination (e.g., 70% semantic, 30% keyword)
-   - Best for most use cases - gets benefits of both approaches
-   - Example: Query "vacation policy" finds semantically similar AND keyword matches
-
-2. **Dense Only** (Pure Semantic):
-   - Only uses embedding similarity (cosine distance)
-   - Finds conceptually similar content even without exact keywords
-   - Best for: Natural language queries, conceptual searches
-   - Example: "time off" can find "vacation days" (different words, same meaning)
-
-3. **Sparse Only** (Pure Keyword):
-   - Only uses traditional keyword matching (BM25, TF-IDF)
-   - Requires exact or close keyword matches
-   - Best for: Technical docs with specific terms, code, API names
-   - Example: "GET /api/users" finds exact method names
+Phase 2 Enhancement:
+--------------------
+Phase 2 adds support for MULTIPLE retrieval strategies:
+1. **vector_similarity**: Pure dense/semantic search (Vector only)
+2. **bm25**: Pure sparse/keyword search (BM25 only)
+3. **hybrid**: Dense + Sparse combined (RECOMMENDED) ⭐
 
 Why Use a Factory?
 ------------------
-- Enables config-driven strategy selection (change YAML, no code changes)
-- Abstracts away strategy initialization complexity
-- Makes A/B testing different strategies trivial
-- Follows same pattern as other factories (consistency)
+- **Config-Driven**: Change retrieval strategy via YAML, no code changes
+- **Clean Code**: Hides complex initialization logic
+- **Testing**: Easy to mock different strategies
+- **Flexibility**: Add new strategies without changing callers
 
-Note: Retrieval Strategies (Optional for MVP)
-----------------------------------------------
-The retrieval strategies are more advanced and optional for basic upsert functionality.
-For MVP, you can use simple vector search directly from the vector store.
+Example YAML Configuration:
+---------------------------
+retrieval:
+  strategies: ["hybrid"]           # List of enabled strategies
+  top_k: 10
+  similarity: "cosine"
+  hybrid:
+    alpha: 0.7                     # 70% semantic, 30% keywords
+    normalize_scores: true
 
-Retrieval strategies become important when:
-- You need to combine multiple search methods
-- You want reranking capabilities
-- You need advanced filtering logic
-- You're optimizing for specific query types
-
-This factory is included for completeness but can be implemented later.
+How It Works:
+-------------
+1. Load domain config from YAML
+2. RetrievalFactory reads config.retrieval.strategies
+3. For each strategy, factory creates appropriate retriever
+4. Returns dict of {strategy_name: retriever_instance}
+5. Pipeline uses retrievers based on config
 
 Example Usage:
 --------------
-from models.domain_config import RetrievalConfig
+# In DocumentPipeline
+from core.factories.retrieval_factory import RetrievalFactory
 
-# Hybrid retrieval (semantic + keyword)
-config = RetrievalConfig(
-    strategy="hybrid",
-    alpha=0.7,  # 70% semantic, 30% keyword
-    top_k=10
+# Create retrievers from config
+retrievers = RetrievalFactory.create_retrievers(
+    config=domain_config,
+    vector_store=vector_store,
+    embedding_model=embedding_model
 )
 
-retriever = RetrievalFactory.create_retriever(
-    config,
-    vector_store=store,
-    embedder=embedder
-)
+# Use hybrid retriever (recommended)
+hybrid_retriever = retrievers['hybrid']
+results = hybrid_retriever.retrieve(query_text, filters, top_k)
 
-# Search
-results = retriever.retrieve(query="vacation policy")
+References:
+-----------
+- Phase 2 Spec: Section 9 (Factory Layer Enhancements)
+- Factory Pattern: https://refactoring.guru/design-patterns/factory-method
+
 """
 
-from typing import Optional , Any
-from core.interfaces.embedding_interface import EmbeddingInterface
-from core.interfaces.vector_store_interface import VectorStoreInterface
-# from core.retrieval.hybrid_retriever import HybridRetriever  # To be implemented
-# from core.retrieval.dense_retriever import DenseRetriever      # To be implemented
-# from core.retrieval.sparse_retriever import SparseRetriever    # To be implemented
-from models.domain_config import RetrievalConfig
+import sys
+from pathlib import Path
+project_root = Path(__file__).parent.parent  # Go up two levels from config_manager.py
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+
+
+from typing import Dict, Any, Optional
 import logging
+
+# Import interfaces
+from core.interfaces.retrieval_interface import RetrievalInterface
+from core.interfaces.vectorstore_interface import VectorStoreInterface
+from core.interfaces.embedding_interface import EmbeddingInterface
+
+# Import retrieval implementations
+from core.retrievals.vector_similarity_retrieval import VectorSimilarityRetrieval
+from core.retrievals.bm25_retrieval import BM25Retrieval
+from core.retrievals.hybrid_retrieval import HybridRetrieval
+
+# Import config models
+from models.domain_config import DomainConfig
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -85,295 +95,374 @@ logger = logging.getLogger(__name__)
 
 class RetrievalFactory:
     """
-    Factory for creating retrieval strategy instances based on configuration.
+    Factory for creating retrieval strategy instances.
 
-    NOTE: This is a PLACEHOLDER factory for future retrieval implementations.
-    For MVP, you can use vector store's search() method directly.
+    Creates appropriate retrieval strategy based on domain configuration.
+    Supports multiple strategies simultaneously (Phase 2 feature).
 
-    Supported Strategies (Future):
-    -------------------------------
-    - "hybrid": Dense (semantic) + Sparse (keyword) with alpha weighting
-    - "dense_only": Pure semantic/vector search
-    - "sparse_only": Pure keyword/BM25 search
+    Supported Strategies:
+    ---------------------
+    1. **vector_similarity** (Dense/Semantic)
+       - Uses: VectorSimilarityRetrieval
+       - Best for: Paraphrases, concepts, synonyms
+       - Speed: Fast (~50-100ms)
+       - Dependencies: vector_store, embedding_model
 
-    When to Implement:
-    ------------------
-    Implement retrieval strategies when you need:
-    1. Combining multiple search methods (hybrid)
-    2. Reranking results (e.g., cross-encoder reranking)
-    3. Query expansion (synonyms, related terms)
-    4. Advanced filtering beyond metadata
-    5. Custom scoring functions
+    2. **bm25** (Sparse/Keywords)
+       - Uses: BM25Retrieval
+       - Best for: Exact terms, acronyms, IDs
+       - Speed: Very fast (~10-20ms)
+       - Dependencies: vector_store (for corpus)
 
-    For MVP:
+    3. **hybrid** (Dense + Sparse) ⭐ RECOMMENDED
+       - Uses: HybridRetrieval
+       - Best for: All query types (most robust)
+       - Speed: Moderate (~100-150ms)
+       - Dependencies: vector_store, embedding_model
+
+    Methods:
     --------
-    You can skip this and use vector store search directly:
+    - create_retrievers(): Create multiple retrievers from config
+    - create_retriever(): Create single retriever by name
 
-    # Simple approach (no retrieval factory needed)
-    query_emb = embedder.embed_texts([query])[0]
-    results = vector_store.search(query_emb, top_k=10, filters={"domain": "hr"})
-
-    Design Pattern:
-    ---------------
-    Similar to other factories, but more complex because retrieval strategies
-    need access to both vector store and embedder.
-
-    Example Usage (Future):
-    -----------------------
-    # Initialize factories
-    embedder = EmbeddingFactory.create_embedder(config.embeddings)
-    vector_store = VectorStoreFactory.create_store(config.vector_store)
-
-    # Create retriever
-    retriever = RetrievalFactory.create_retriever(
-        config.retrieval,
-        vector_store=vector_store,
-        embedder=embedder
+    Example:
+    --------
+    # Create all configured retrievers
+    retrievers = RetrievalFactory.create_retrievers(
+        config=domain_config,
+        vector_store=chromadb_store,
+        embedding_model=sentence_transformer
     )
 
-    # Use retriever (abstracted from implementation details)
-    results = retriever.retrieve(
-        query="How many vacation days?",
-        top_k=10,
-        filters={"domain": "hr"}
-    )
+    # Use hybrid retriever
+    results = retrievers['hybrid'].retrieve("vacation policy", top_k=10)
     """
 
     @staticmethod
-    def create_retriever(
-            config: RetrievalConfig,
+    def create_retrievers(
+            config: DomainConfig,
             vector_store: VectorStoreInterface,
-            embedder: EmbeddingInterface,
-            sparse_index: Optional[Any] = None  # For BM25/keyword search (future)
-    ):
+            embedding_model: EmbeddingInterface
+    ) -> Dict[str, RetrievalInterface]:
         """
-        Create and return a retriever instance based on configuration.
+        Create all retrieval strategies specified in config.
 
-        NOTE: This is a PLACEHOLDER implementation. For MVP, use vector store
-        search directly. Implement full retrieval strategies later when needed.
+        This is the PRIMARY factory method for Phase 2.
+        Creates multiple retrievers based on config.retrieval.strategies list.
 
         Parameters:
         -----------
-        config : RetrievalConfig
-            Retrieval configuration from domain YAML
-            Contains:
-            - strategy: "hybrid", "dense_only", or "sparse_only"
-            - alpha: Weight for hybrid (0.0-1.0)
-            - top_k: Number of results to retrieve
-            - enable_metadata_filtering: Whether to allow filters
-            - normalize_scores: Whether to normalize scores
-
+        config : DomainConfig
+            Domain configuration with retrieval settings
         vector_store : VectorStoreInterface
-            Vector store for semantic search
-
-        embedder : EmbeddingInterface
-            Embedder for query encoding
-
-        sparse_index : Optional, future
-            BM25 or keyword index for sparse search (not implemented yet)
+            Vector store instance (ChromaDB, Pinecone, etc.)
+        embedding_model : EmbeddingInterface
+            Embedding model instance (Sentence-Transformers, Gemini, etc.)
 
         Returns:
         --------
-        RetrieverInterface (future):
-            Concrete retriever implementation
+        Dict[str, RetrievalInterface]:
+            Dictionary mapping strategy name to retriever instance
+            Example: {
+                'hybrid': HybridRetrieval(...),
+                'vector_similarity': VectorSimilarityRetrieval(...),
+                'bm25': BM25Retrieval(...)
+            }
 
         Raises:
         -------
-        NotImplementedError:
-            Currently raises this for all strategies (placeholder)
         ValueError:
-            If config.strategy is not recognized
+            If no strategies specified in config
+            If unknown strategy name in config
 
-        Future Implementation:
-        ----------------------
-        if config.strategy == "hybrid":
-            return HybridRetriever(
-                vector_store=vector_store,
-                embedder=embedder,
-                sparse_index=sparse_index,
-                alpha=config.alpha,
-                top_k=config.top_k,
-                normalize_scores=config.normalize_scores
-            )
+        Example:
+        --------
+        # Config YAML:
+        # retrieval:
+        #   strategies: ["hybrid", "vector_similarity"]
+        #   hybrid:
+        #     alpha: 0.7
 
-        elif config.strategy == "dense_only":
-            return DenseRetriever(
-                vector_store=vector_store,
-                embedder=embedder,
-                top_k=config.top_k
-            )
+        retrievers = RetrievalFactory.create_retrievers(
+            config=domain_config,
+            vector_store=vector_store,
+            embedding_model=embedder
+        )
 
-        elif config.strategy == "sparse_only":
-            return SparseRetriever(
-                sparse_index=sparse_index,
-                top_k=config.top_k
-            )
+        # Use hybrid
+        hybrid_results = retrievers['hybrid'].retrieve(query_text, top_k=10)
+
+        # Use vector_similarity
+        dense_results = retrievers['vector_similarity'].retrieve(query_text, top_k=10)
         """
-        strategy = config.strategy.lower()
+        logger.info(f"Creating retrievers for strategies: {config.retrieval.strategies}")
 
-        logger.warning(
-            f"RetrievalFactory is a placeholder for future implementation.\n"
-            f"Requested strategy: '{strategy}'\n"
-            f"For MVP, use vector store search directly:\n"
-            f"  query_emb = embedder.embed_texts([query])[0]\n"
-            f"  results = vector_store.search(query_emb, top_k={config.top_k})"
+        # Validate strategies list
+        if not config.retrieval.strategies:
+            raise ValueError(
+                "No retrieval strategies specified in config.retrieval.strategies"
+            )
+
+        retrievers = {}
+
+        # Create each configured strategy
+        for strategy_name in config.retrieval.strategies:
+            logger.info(f"Creating retriever: {strategy_name}")
+
+            try:
+                retriever = RetrievalFactory.create_retriever(
+                    strategy_name=strategy_name,
+                    config=config,
+                    vector_store=vector_store,
+                    embedding_model=embedding_model
+                )
+
+                retrievers[strategy_name] = retriever
+                logger.info(f"✅ Created {strategy_name} retriever")
+
+            except Exception as e:
+                logger.error(f"Failed to create {strategy_name} retriever: {e}")
+                raise
+
+        logger.info(f"✅ Created {len(retrievers)} retrievers: {list(retrievers.keys())}")
+
+        return retrievers
+
+    @staticmethod
+    def create_retriever(
+            strategy_name: str,
+            config: DomainConfig,
+            vector_store: VectorStoreInterface,
+            embedding_model: EmbeddingInterface
+    ) -> RetrievalInterface:
+        """
+        Create a single retrieval strategy by name.
+
+        Parameters:
+        -----------
+        strategy_name : str
+            Retrieval strategy name: "vector_similarity", "bm25", or "hybrid"
+        config : DomainConfig
+            Domain configuration
+        vector_store : VectorStoreInterface
+            Vector store instance
+        embedding_model : EmbeddingInterface
+            Embedding model instance
+
+        Returns:
+        --------
+        RetrievalInterface:
+            Retriever instance
+
+        Raises:
+        -------
+        ValueError:
+            If unknown strategy name
+
+        Example:
+        --------
+        # Create hybrid retriever
+        hybrid = RetrievalFactory.create_retriever(
+            strategy_name="hybrid",
+            config=domain_config,
+            vector_store=vector_store,
+            embedding_model=embedder
+        )
+        """
+        logger.debug(f"Creating retriever: {strategy_name}")
+
+        # Strategy 1: Vector Similarity (Dense/Semantic)
+        if strategy_name == "vector_similarity":
+            return RetrievalFactory._create_vector_similarity_retrieval(
+                vector_store=vector_store,
+                embedding_model=embedding_model
+            )
+
+        # Strategy 2: BM25 (Sparse/Keywords)
+        elif strategy_name == "bm25":
+            return RetrievalFactory._create_bm25_retrieval(
+                vector_store=vector_store
+            )
+
+        # Strategy 3: Hybrid (Dense + Sparse) - RECOMMENDED
+        elif strategy_name == "hybrid":
+            return RetrievalFactory._create_hybrid_retrieval(
+                config=config,
+                vector_store=vector_store,
+                embedding_model=embedding_model
+            )
+
+        else:
+            raise ValueError(
+                f"Unknown retrieval strategy: '{strategy_name}'\n"
+                f"Supported strategies: vector_similarity, bm25, hybrid"
+            )
+
+    # =========================================================================
+    # PRIVATE FACTORY METHODS (Strategy-Specific)
+    # =========================================================================
+
+    @staticmethod
+    def _create_vector_similarity_retrieval(
+            vector_store: VectorStoreInterface,
+            embedding_model: EmbeddingInterface
+    ) -> VectorSimilarityRetrieval:
+        """
+        Create vector similarity retrieval (dense/semantic search).
+
+        Simple strategy - delegates to existing vector store and embedder.
+        No additional configuration needed.
+
+        Returns:
+        --------
+        VectorSimilarityRetrieval:
+            Dense retrieval instance
+        """
+        logger.debug("Creating VectorSimilarityRetrieval...")
+
+        retriever = VectorSimilarityRetrieval(
+            vector_store=vector_store,
+            embedding_model=embedding_model
         )
 
-        # Placeholder - to be implemented in Phase 2
-        raise NotImplementedError(
-            f"Retrieval strategies not yet implemented.\n"
-            f"Requested: {strategy}\n\n"
-            f"For MVP, use this pattern instead:\n\n"
-            f"# Embed query\n"
-            f"query_embedding = embedder.embed_texts([query])[0]\n\n"
-            f"# Search vector store\n"
-            f"results = vector_store.search(\n"
-            f"    query_embedding,\n"
-            f"    top_k={config.top_k},\n"
-            f"    filters={{'domain': 'your_domain'}}\n"
-            f")\n\n"
-            f"# Process results\n"
-            f"for result in results:\n"
-            f"    print(result['document'])\n\n"
-            f"Retrieval strategies (hybrid, reranking, etc.) will be added in Phase 2."
+        logger.debug(
+            f"✅ VectorSimilarityRetrieval created: "
+            f"model={embedding_model.get_model_name()}"
         )
 
+        return retriever
 
-# =============================================================================
-# FUTURE: Retrieval Strategy Interfaces
-# =============================================================================
+    @staticmethod
+    def _create_bm25_retrieval(
+            vector_store: VectorStoreInterface
+    ) -> BM25Retrieval:
+        """
+        Create BM25 retrieval (sparse/keyword search).
 
-"""
-When implementing retrieval strategies, create these files:
+        Workflow:
+        ---------
+        1. Get corpus from vector store (all document texts)
+        2. Build BM25 index from corpus
+        3. Return BM25Retrieval instance
 
-1. core/interfaces/retrieval_interface.py
-   ----------------------------------------
-   from abc import ABC, abstractmethod
-   from typing import List, Dict, Any, Optional
+        Note: This is called once at initialization. For large corpora,
+        consider caching or incremental updates.
 
-   class RetrieverInterface(ABC):
-       '''Abstract interface for retrieval strategies.'''
+        Returns:
+        --------
+        BM25Retrieval:
+            Sparse retrieval instance
 
-       @abstractmethod
-       def retrieve(
-           self,
-           query: str,
-           top_k: int,
-           filters: Optional[Dict[str, Any]] = None
-       ) -> List[Dict]:
-           '''Retrieve relevant documents for query.'''
-           pass
+        Raises:
+        -------
+        RuntimeError:
+            If vector store doesn't support get_all_documents()
+        """
+        logger.debug("Creating BM25Retrieval...")
 
-2. core/retrieval/hybrid_retriever.py
-   -----------------------------------
-   class HybridRetriever(RetrieverInterface):
-       '''Combines dense (semantic) and sparse (keyword) search.'''
+        # Get corpus from vector store (Phase 2 requirement)
+        try:
+            logger.info("Fetching corpus from vector store for BM25 index...")
+            corpus, doc_ids = vector_store.get_all_documents()
+            logger.info(f"Retrieved {len(corpus):,} documents for BM25 index")
 
-       def __init__(self, vector_store, embedder, sparse_index, alpha=0.7, ...):
-           self.vector_store = vector_store
-           self.embedder = embedder
-           self.sparse_index = sparse_index
-           self.alpha = alpha  # Weight for dense vs sparse
+        except Exception as e:
+            logger.error(f"Failed to get corpus from vector store: {e}")
+            raise RuntimeError(
+                f"Vector store must implement get_all_documents() for BM25.\n"
+                f"Error: {e}"
+            )
 
-       def retrieve(self, query, top_k, filters=None):
-           # 1. Dense search (semantic)
-           query_emb = self.embedder.embed_texts([query])[0]
-           dense_results = self.vector_store.search(query_emb, top_k*2, filters)
+        # Create BM25 retrieval
+        retriever = BM25Retrieval(
+            corpus=corpus,
+            doc_ids=doc_ids,
+            k1=1.5,  # BM25 term frequency saturation
+            b=0.75  # BM25 length normalization
+        )
 
-           # 2. Sparse search (keyword/BM25)
-           sparse_results = self.sparse_index.search(query, top_k*2, filters)
+        logger.debug(
+            f"✅ BM25Retrieval created: "
+            f"corpus_size={len(corpus):,}, k1=1.5, b=0.75"
+        )
 
-           # 3. Combine with alpha weighting
-           combined = self._alpha_fusion(dense_results, sparse_results, self.alpha)
+        return retriever
 
-           # 4. Return top_k
-           return combined[:top_k]
+    @staticmethod
+    def _create_hybrid_retrieval(
+            config: DomainConfig,
+            vector_store: VectorStoreInterface,
+            embedding_model: EmbeddingInterface
+    ) -> HybridRetrieval:
+        """
+        Create hybrid retrieval (dense + sparse combined).
 
-       def _alpha_fusion(self, dense, sparse, alpha):
-           # Weighted combination: alpha * dense + (1-alpha) * sparse
-           # Normalize scores, merge, re-rank
-           ...
+        This is the RECOMMENDED strategy for Phase 2 production use.
 
-3. core/retrieval/dense_retriever.py
-   ----------------------------------
-   class DenseRetriever(RetrieverInterface):
-       '''Pure semantic/vector search.'''
+        Workflow:
+        ---------
+        1. Get corpus from vector store
+        2. Create BM25 index from corpus
+        3. Create HybridRetrieval combining vector + BM25
+        4. Use alpha from config (default: 0.7)
 
-       def __init__(self, vector_store, embedder, top_k=10):
-           self.vector_store = vector_store
-           self.embedder = embedder
-           self.top_k = top_k
+        Returns:
+        --------
+        HybridRetrieval:
+            Hybrid retrieval instance
 
-       def retrieve(self, query, top_k, filters=None):
-           query_emb = self.embedder.embed_texts([query])[0]
-           return self.vector_store.search(query_emb, top_k, filters)
+        Raises:
+        -------
+        RuntimeError:
+            If corpus retrieval or BM25 creation fails
+        """
+        logger.debug("Creating HybridRetrieval...")
 
-4. core/retrieval/sparse_retriever.py
-   -----------------------------------
-   class SparseRetriever(RetrieverInterface):
-       '''Pure keyword/BM25 search.'''
+        # Step 1: Get corpus from vector store
+        try:
+            logger.info("Fetching corpus from vector store for hybrid index...")
+            corpus, doc_ids = vector_store.get_all_documents()
+            logger.info(f"Retrieved {len(corpus):,} documents for hybrid index")
 
-       def __init__(self, sparse_index, top_k=10):
-           self.sparse_index = sparse_index  # BM25Index, ElasticsearchIndex, etc.
-           self.top_k = top_k
+        except Exception as e:
+            logger.error(f"Failed to get corpus from vector store: {e}")
+            raise RuntimeError(
+                f"Vector store must implement get_all_documents() for hybrid.\n"
+                f"Error: {e}"
+            )
 
-       def retrieve(self, query, top_k, filters=None):
-           return self.sparse_index.search(query, top_k, filters)
+        # Step 2: Create BM25 index
+        logger.info("Building BM25 index for hybrid retrieval...")
+        bm25_index = BM25Retrieval(
+            corpus=corpus,
+            doc_ids=doc_ids,
+            k1=1.5,
+            b=0.75
+        )
 
-5. core/retrieval/bm25_index.py (for sparse search)
-   -------------------------------------------------
-   from rank_bm25 import BM25Okapi
+        # Step 3: Get hybrid config (alpha, normalize)
+        hybrid_config = config.retrieval.hybrid
+        alpha = hybrid_config.alpha if hybrid_config else 0.7
+        normalize_scores = hybrid_config.normalize_scores if hybrid_config else True
 
-   class BM25Index:
-       '''BM25 keyword search index.'''
+        # Step 4: Create hybrid retrieval
+        retriever = HybridRetrieval(
+            vector_store=vector_store,
+            embedding_model=embedding_model,
+            bm25_index=bm25_index,
+            alpha=alpha,
+            normalize_scores=normalize_scores
+        )
 
-       def __init__(self, documents, metadata):
-           # Tokenize documents
-           tokenized_docs = [doc.split() for doc in documents]
+        logger.debug(
+            f"✅ HybridRetrieval created:\n"
+            f"   Alpha: {alpha:.2f} (dense={alpha:.0%}, sparse={1 - alpha:.0%})\n"
+            f"   Normalize: {normalize_scores}\n"
+            f"   Corpus: {len(corpus):,} documents"
+        )
 
-           # Build BM25 index
-           self.bm25 = BM25Okapi(tokenized_docs)
-           self.documents = documents
-           self.metadata = metadata
+        return retriever
 
-       def search(self, query, top_k, filters=None):
-           # Tokenize query
-           query_tokens = query.split()
-
-           # BM25 scoring
-           scores = self.bm25.get_scores(query_tokens)
-
-           # Get top_k
-           top_indices = scores.argsort()[-top_k:][::-1]
-
-           # Format results
-           results = []
-           for idx in top_indices:
-               results.append({
-                   'document': self.documents[idx],
-                   'metadata': self.metadata[idx],
-                   'score': scores[idx]
-               })
-
-           return results
-
-6. Update models/domain_config.py
-   -------------------------------
-   Add to RetrievalConfig:
-
-   class RetrievalConfig(BaseModel):
-       strategy: str = "hybrid"
-       alpha: float = 0.7
-       top_k: int = 10
-       enable_metadata_filtering: bool = True
-       normalize_scores: bool = True
-
-       # Advanced options (future)
-       enable_reranking: bool = False
-       reranker_model: Optional[str] = None
-       enable_query_expansion: bool = False
-       max_query_expansions: int = 3
-"""
 
 # =============================================================================
 # USAGE EXAMPLES
@@ -381,42 +470,147 @@ When implementing retrieval strategies, create these files:
 
 if __name__ == "__main__":
     """
-    Demonstration of RetrievalFactory (placeholder implementation).
+    Demonstration of RetrievalFactory usage.
     Run: python core/factories/retrieval_factory.py
     """
-
     import logging
-    from models.domain_config import RetrievalConfig
 
     logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
     print("=" * 70)
-    print("RetrievalFactory Usage Examples (Placeholder)")
+    print("RetrievalFactory - Create Retrieval Strategies from Config")
     print("=" * 70)
 
-    # Example 1: Attempting to create retriever (will show error)
-    print("\n1. Attempting to Create Retriever")
-    print("-" * 70)
+    print("""
+RetrievalFactory Overview:
+--------------------------
 
-    config = RetrievalConfig(
-        strategy="hybrid",
-        alpha=0.7,
-        top_k=10
-    )
+Purpose:
+Creates appropriate retrieval strategy based on domain configuration.
+Enables swapping retrieval methods via YAML config, no code changes!
 
-    print(f"Config: strategy={config.strategy}, alpha={config.alpha}, top_k={config.top_k}")
-    print("\nAttempting to create retriever...")
+Supported Strategies (Phase 2):
+--------------------------------
 
-    try:
-        retriever = RetrievalFactory.create_retriever(
-            config,
-            vector_store=None,  # Placeholder
-            embedder=None  # Placeholder
-        )
-    except NotImplementedError as e:
-        print(f"\n⚠️  Expected NotImplementedError (placeholder):")
-        print(f"\n{str(e)}")
+1. vector_similarity (Dense/Semantic)
+   - Pure vector search using embeddings
+   - Best for: Paraphrases, concepts, synonyms
+   - Speed: Fast (~50-100ms)
+   - Config:
+     retrieval:
+       strategies: ["vector_similarity"]
 
-    # Example 2: MVP Pattern (how to do retrieval without factory)
-    print("\n2. MVP Pattern: Direct Vector Store Search")
-    print("-" * 70)
+2. bm25 (Sparse/Keywords)
+   - Pure keyword search using BM25
+   - Best for: Exact terms, acronyms, IDs
+   - Speed: Very fast (~10-20ms)
+   - Config:
+     retrieval:
+       strategies: ["bm25"]
+
+3. hybrid (Dense + Sparse) ⭐ RECOMMENDED
+   - Combines vector + BM25 with alpha weighting
+   - Best for: All query types (most robust)
+   - Speed: Moderate (~100-150ms)
+   - Config:
+     retrieval:
+       strategies: ["hybrid"]
+       hybrid:
+         alpha: 0.7              # 70% semantic, 30% keywords
+         normalize_scores: true
+
+Multi-Strategy Support:
+-----------------------
+Phase 2 allows MULTIPLE strategies simultaneously:
+
+retrieval:
+  strategies: ["hybrid", "vector_similarity", "bm25"]
+  hybrid:
+    alpha: 0.7
+
+Factory creates all 3 retrievers!
+You can compare results or use different strategies for different query types.
+
+Usage Pattern:
+--------------
+
+# Step 1: Load domain config
+from core.config_manager import ConfigManager
+
+config_mgr = ConfigManager()
+domain_config = config_mgr.load_domain_config("hr")
+
+# Step 2: Create vector store and embedder
+from core.factories.vector_store_factory import VectorStoreFactory
+from core.factories.embedding_factory import EmbeddingFactory
+
+vector_store = VectorStoreFactory.create_vector_store(domain_config)
+embedder = EmbeddingFactory.create_embedding_model(domain_config)
+
+# Step 3: Create retrievers
+from core.factories.retrieval_factory import RetrievalFactory
+
+retrievers = RetrievalFactory.create_retrievers(
+    config=domain_config,
+    vector_store=vector_store,
+    embedding_model=embedder
+)
+
+# Step 4: Use retrievers
+hybrid = retrievers['hybrid']  # Recommended!
+results = hybrid.retrieve(
+    query_text="What is the vacation policy?",
+    metadata_filters={"domain": "hr"},
+    top_k=10
+)
+
+# Or use specific strategy
+dense_only = retrievers.get('vector_similarity')
+if dense_only:
+    results = dense_only.retrieve(query_text, top_k=10)
+
+Benefits:
+---------
+✅ Config-driven (change strategy via YAML)
+✅ No code changes when switching strategies
+✅ Easy A/B testing (run multiple strategies)
+✅ Clean separation of concerns
+✅ Testable (mock different strategies)
+
+Phase 2 Integration:
+---------------------
+The factory is used by:
+- DocumentPipeline: Creates retrievers at initialization
+- DocumentService: Uses pipeline's retrievers for queries
+- CLI Tools: Allows strategy selection via command-line
+
+Configuration Examples:
+-----------------------
+
+# Development (fast, simple)
+retrieval:
+  strategies: ["vector_similarity"]
+  top_k: 10
+
+# Production (robust, recommended)
+retrieval:
+  strategies: ["hybrid"]
+  top_k: 10
+  hybrid:
+    alpha: 0.7
+    normalize_scores: true
+
+# Experimentation (compare all)
+retrieval:
+  strategies: ["hybrid", "vector_similarity", "bm25"]
+  top_k: 10
+  hybrid:
+    alpha: 0.7
+    normalize_scores: true
+
+Factory automatically creates all configured strategies!
+    """)
+
+    print("\n" + "=" * 70)
+    print("✅ RetrievalFactory ready to use!")
+    print("=" * 70)

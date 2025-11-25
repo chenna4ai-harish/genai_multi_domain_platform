@@ -16,6 +16,8 @@ chromadb==0.4.18                   # Vector database
 pinecone ==7.3.0           # Pinecone (optional alternative)
 google-generativeai>=0.3.0        # Gemini embeddings (optional)
 
+
+
 # ============================================
 # DOCUMENT PROCESSING
 # ============================================
@@ -41,12 +43,12 @@ PyYAML==6.0.1                     # YAML config files
 numpy==1.24.3                     # Numerical operations
 python-dateutil==2.8.2           # Date utilities
 reportlab>=4.0.0                  # PDF generation (if needed)
+urllib3>=1.24.2,<2.4.0
 
 # ============================================
 # DEVELOPMENT & TESTING
 # ============================================
 pytest==7.4.3                     # Testing framework
-
 # ============================================
 # ADDITIONAL MISSING DEPENDENCIES
 # ============================================
@@ -55,3 +57,4 @@ tqdm>=4.65.0                      # Progress bars (used by transformers)
 filelock>=3.12.0                  # File locking (used by transformers)
 packaging>=23.0                   # Package version parsing
 typing-extensions>=4.5.0          # Type hints backport
+
