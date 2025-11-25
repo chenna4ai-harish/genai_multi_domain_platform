@@ -85,7 +85,7 @@ References:
 """
 
 import logging
-from typing import List, Dict, Optional, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 # Import factories (ONLY factories, never concrete implementations!)
@@ -597,6 +597,235 @@ class DocumentPipeline:
         logger.info(f"Fetching document info: {doc_id}")
         # This would need vector store support or search + aggregate
         raise NotImplementedError("get_document_info not yet implemented")
+
+
+    def list_documents(self, filters: dict | None = None) -> list[dict]:
+        # Implement via your vector store / metadata backend
+        raise NotImplementedError
+
+    def list_chunks(
+        self,
+        doc_id: str,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[dict]:
+        # Implement via your vector store / metadata backend
+        raise NotImplementedError
+
+
+    def list_documents(self, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """
+        Return document-level metadata aggregated from the vector store.
+
+        This is used by the Playground "Corpus Explorer" to show:
+        - doc_id
+        - title
+        - doc_type
+        - domain
+        - uploader_id
+        - version
+        - file_hash
+        - chunk_count
+        - first_seen / last_seen timestamps
+        - deprecated flag
+
+        Parameters
+        ----------
+        filters : dict, optional
+            Simple equality filters on document-level fields
+            Example: {"deprecated": False, "doc_type": "policy"}
+
+        Returns
+        -------
+        List[Dict[str, Any]]:
+            One dict per document.
+        """
+        logger.info(
+            f"Listing documents for domain={self.domain_id}, filters={filters}"
+        )
+
+        # 1) If vector store has a native list_documents(), just use it
+        if hasattr(self.vector_store, "list_documents"):
+            logger.debug("Using vector_store.list_documents()")
+            return self.vector_store.list_documents(filters=filters)
+
+        # 2) Generic fallback: scan all metadata from the underlying collection
+        collection = getattr(self.vector_store, "collection", None)
+        if collection is None:
+            raise NotImplementedError(
+                "Vector store does not support list_documents and has no 'collection' handle."
+            )
+
+        raw = collection.get(include=["metadatas"])
+        metadatas = raw.get("metadatas") or []
+
+        docs: Dict[str, Dict[str, Any]] = {}
+
+        for md in metadatas:
+            if not md:
+                continue
+            doc_id = md.get("doc_id")
+            if not doc_id:
+                continue
+
+            # Initialize record if first time
+            record = docs.setdefault(
+                doc_id,
+                {
+                    "doc_id": doc_id,
+                    "title": md.get("title"),
+                    "doc_type": md.get("doc_type"),
+                    "domain": md.get("domain"),
+                    "uploader_id": md.get("uploader_id"),
+                    "version": md.get("version"),
+                    "file_hash": md.get("source_file_hash")
+                    or md.get("file_hash"),
+                    "chunk_count": 0,
+                    "first_seen": None,
+                    "last_seen": None,
+                    "deprecated": md.get("deprecated", False),
+                },
+            )
+
+            # Increment chunk count
+            record["chunk_count"] += 1
+
+            # Track timestamps (upload or processing)
+            ts = md.get("upload_timestamp") or md.get("processing_timestamp")
+            if ts:
+                if record["first_seen"] is None or ts < record["first_seen"]:
+                    record["first_seen"] = ts
+                if record["last_seen"] is None or ts > record["last_seen"]:
+                    record["last_seen"] = ts
+
+        # Apply simple equality filters in Python if provided
+        if filters:
+            def _match(rec: Dict[str, Any]) -> bool:
+                for k, v in filters.items():
+                    if rec.get(k) != v:
+                        return False
+                return True
+
+            doc_list = [d for d in docs.values() if _match(d)]
+        else:
+            doc_list = list(docs.values())
+
+        # Sort newest first
+        doc_list.sort(key=lambda d: d.get("last_seen") or "", reverse=True)
+
+        logger.info(f"list_documents: returning {len(doc_list)} docs.")
+        return doc_list
+
+
+    def list_chunks(
+        self,
+        doc_id: str,
+        *,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return chunk-level metadata for a given document.
+
+        Used by the Playground 'Chunks' view to show:
+        - id (chunk_id)
+        - doc_id
+        - text
+        - page_num
+        - char_start / char_end (or char_range)
+        - full metadata
+
+        Parameters
+        ----------
+        doc_id : str
+            Document identifier
+        limit : int, optional
+            Max number of chunks to return
+        offset : int
+            Offset into the result set (for pagination)
+
+        Returns
+        -------
+        List[Dict[str, Any]]:
+            One dict per chunk.
+
+        Raises
+        ------
+        ValueError:
+            If doc_id is missing
+        """
+        if not doc_id:
+            raise ValueError("doc_id is required for list_chunks")
+
+        logger.info(
+            f"Listing chunks for doc_id={doc_id}, limit={limit}, offset={offset}"
+        )
+
+        # 1) If vector store has a native list_chunks(), use that
+        if hasattr(self.vector_store, "list_chunks"):
+            logger.debug("Using vector_store.list_chunks()")
+            return self.vector_store.list_chunks(
+                doc_id=doc_id, limit=limit, offset=offset
+            )
+
+        # 2) Generic fallback: query underlying collection by metadata
+        collection = getattr(self.vector_store, "collection", None)
+        if collection is None:
+            raise NotImplementedError(
+                "Vector store does not support list_chunks and has no 'collection' handle."
+            )
+
+        results = collection.get(
+            where={"doc_id": doc_id},
+            include=["ids", "documents", "metadatas"],
+        )
+
+        ids = results.get("ids") or []
+        docs = results.get("documents") or []
+        metas = results.get("metadatas") or []
+
+        n = len(ids)
+        if n == 0:
+            logger.warning(f"No chunks found for doc_id={doc_id}")
+            return []
+
+        start = max(0, offset)
+        end = n if limit is None else min(n, offset + limit)
+
+        out: List[Dict[str, Any]] = []
+
+        for i in range(start, end):
+            md = metas[i] or {}
+            text = docs[i] if i < len(docs) else ""
+
+            # Try to derive char_start / char_end
+            char_start = md.get("char_start")
+            char_end = md.get("char_end")
+
+            # If only char_range is stored (like [start, end]), use that
+            char_range = md.get("char_range")
+            if char_range and len(char_range) == 2:
+                if char_start is None:
+                    char_start = char_range[0]
+                if char_end is None:
+                    char_end = char_range[1]
+
+            out.append(
+                {
+                    "id": ids[i],
+                    "doc_id": md.get("doc_id", doc_id),
+                    "chunk_index": md.get("chunk_index", i),
+                    "text": text,
+                    "page_num": md.get("page_num"),
+                    "char_start": char_start,
+                    "char_end": char_end,
+                    "metadata": md,
+                }
+            )
+
+        logger.info(f"list_chunks: returning {len(out)} chunks for doc_id={doc_id}")
+        return out
 
 
 # =============================================================================

@@ -662,6 +662,227 @@ class DocumentService:
             logger.exception(f"Failed to get document info: {doc_id}")
             raise DocumentNotFoundError(f"Document not found: {doc_id}")
 
+    def query_with_answer(
+        self,
+        query_text: str,
+        config: dict | None = None,
+        *,
+        top_k: int | None = None,
+        alpha: float | None = None,
+        llm_provider: str | None = None,
+        llm_model: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        filters: dict | None = None,
+    ) -> dict:
+        """
+        High-level Playground entrypoint.
+
+        Returns:
+            {
+              "answer": str,
+              "confidence": float | None,
+              "sources": List[dict],
+              "trace": dict,
+            }
+        """
+        if not query_text or not query_text.strip():
+            raise ValueError("query_text is required")
+
+        # 1) Build retrieval params (merge config defaults + overrides)
+        retrieval_cfg = (config or {}).get("retrieval", {})
+        effective_top_k = top_k or retrieval_cfg.get("top_k", 5)
+        effective_alpha = alpha if alpha is not None else retrieval_cfg.get("alpha", 0.5)
+
+        # 2) Run retrieval via pipeline
+        retrieval_result = self.pipeline.query(
+            query_text=query_text,
+            top_k=effective_top_k,
+            alpha=effective_alpha,
+            filters=filters or {},
+        )
+
+        # Expect something like:
+        # retrieval_result = {
+        #   "results": List[dict],   # each has doc_id, score, text, metadata...
+        #   "timings": {...},
+        #   "strategy": "...",
+        # }
+
+        results = retrieval_result.get("results", [])
+        timings = retrieval_result.get("timings", {})
+        strategy = retrieval_result.get("strategy", "default")
+
+        # 3) Build LLM request input from results
+        context_chunks = [r.get("text", "") for r in results]
+
+        # 4) Resolve LLM config
+        llm_cfg = (config or {}).get("llm_rerank", {})
+        provider = llm_provider or llm_cfg.get("provider", "openai")
+        model = llm_model or llm_cfg.get("model_name", "gpt-4.1-mini")
+        temp = temperature if temperature is not None else llm_cfg.get("temperature", 0.2)
+        max_toks = max_tokens or llm_cfg.get("max_tokens", 512)
+
+        # 5) Call LLM (you’ll plug into your own LLM client here)
+        answer, confidence = self._generate_answer_with_llm(
+            query_text=query_text,
+            context_chunks=context_chunks,
+            provider=provider,
+            model=model,
+            temperature=temp,
+            max_tokens=max_toks,
+        )
+
+        # 6) Shape sources for UI
+        sources = []
+        for r in results:
+            meta = r.get("metadata", {}) or {}
+            sources.append(
+                {
+                    "doc_id": meta.get("doc_id"),
+                    "title": meta.get("title") or meta.get("file_name"),
+                    "page": meta.get("page"),
+                    "score": float(r.get("score", 0.0)),
+                    "snippet": r.get("text", "")[:400],
+                }
+            )
+
+        # 7) Trace for Trace tab
+        trace = {
+            "strategy": strategy,
+            "params": {
+                "top_k": effective_top_k,
+                "alpha": effective_alpha,
+            },
+            "timings": timings,
+            "raw_results_count": len(results),
+        }
+
+        return {
+            "answer": answer,
+            "confidence": confidence,
+            "sources": sources,
+            "trace": trace,
+        }
+
+    def list_documents(
+        self,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        List all documents for this domain (aggregated over chunks).
+
+        Parameters
+        ----------
+        filters : Dict[str, Any], optional
+            Document-level filters (equality)
+            Example: {"deprecated": False, "doc_type": "policy"}
+
+        Returns
+        -------
+        List[Dict[str, Any]]:
+            Document records as returned by pipeline.list_documents
+        """
+        logger.info(
+            f"List documents request: domain={self.domain_id}, filters={filters}"
+        )
+
+        try:
+            # Always enforce domain in filters if present in metadata schema
+            f = dict(filters or {})
+            f.setdefault("domain", self.domain_id)
+
+            docs = self.pipeline.list_documents(filters=f)
+            logger.info(f"✅ list_documents returned {len(docs)} docs")
+            return docs
+
+        except Exception as e:
+            logger.exception("Failed to list documents")
+            raise ProcessingError(f"Failed to list documents: {e}")
+
+    def list_chunks(
+        self,
+        doc_id: str,
+        *,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        List chunks for a specific document in this domain.
+
+        Parameters
+        ----------
+        doc_id : str
+            Document identifier
+        limit : int, optional
+            Max number of chunks to return
+        offset : int
+            Offset into result set
+
+        Returns
+        -------
+        List[Dict[str, Any]]:
+            Chunk records as returned by pipeline.list_chunks
+
+        Raises
+        ------
+        ValidationError:
+            If doc_id is missing
+        DocumentNotFoundError:
+            If no chunks found for doc_id
+        ProcessingError:
+            For other failures
+        """
+        logger.info(
+            f"List chunks request: domain={self.domain_id}, doc_id={doc_id}, "
+            f"limit={limit}, offset={offset}"
+        )
+
+        if not doc_id:
+            raise ValidationError("doc_id is required for list_chunks()")
+
+        try:
+            chunks = self.pipeline.list_chunks(
+                doc_id=doc_id, limit=limit, offset=offset
+            )
+
+            if not chunks:
+                raise DocumentNotFoundError(
+                    f"No chunks found for document: {doc_id}"
+                )
+
+            logger.info(
+                f"✅ list_chunks returned {len(chunks)} chunks for doc_id={doc_id}"
+            )
+            return chunks
+
+        except DocumentNotFoundError:
+            # Bubble up as-is
+            raise
+
+        except Exception as e:
+            logger.exception(f"Failed to list chunks for doc_id={doc_id}")
+            raise ProcessingError(f"Failed to list chunks: {e}")
+
+
+    def dry_run_retrieval(
+        self,
+        query_text: str,
+        *,
+        top_k: int = 10,
+        alpha: float = 0.5,
+        filters: dict | None = None,
+    ) -> dict:
+        """
+        Just retrieval, no LLM – for debugging.
+        """
+        result = self.pipeline.query(
+            query_text=query_text,
+            top_k=top_k,
+            alpha=alpha,
+            filters=filters or {},
+        )
+        return result
 
 # =============================================================================
 # USAGE EXAMPLES
