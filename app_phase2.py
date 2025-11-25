@@ -1,413 +1,693 @@
-"""
-app.py - Multi-Domain RAG System UI (Gradio)
-
-Phase 1: Query Interface with Expert UI/UX Design
-Phase 2 Compliant: Zero business logic in UI
-
-Author: AI Architect
-Date: November 24, 2025
-"""
-
 import gradio as gr
-import pandas as pd
-from datetime import datetime
+import uuid
 from typing import List, Dict, Any
+from pathlib import Path
+from datetime import datetime
 
-# Import Phase 2 service (ONLY allowed import from core)
-from core.services.document_service import DocumentService
-from core.config_manager import ConfigManager
-
-# =============================================================================
-# CONFIGURATION & INITIALIZATION
-# =============================================================================
-
-# Color scheme
-PRIMARY_BLUE = "#1E88E5"
-SECONDARY_TEAL = "#00897B"
-SUCCESS_GREEN = "#43A047"
-DARK_GRAY = "#37474F"
-LIGHT_GRAY = "#ECEFF1"
-
-# Initialize service (Phase 2 pattern)
-config_mgr = ConfigManager()
-# Default to HR domain for demo (will be selectable in UI)
-hr_config = config_mgr.load_domain_config("hr")
-service = DocumentService(hr_config)
+from core.registry.component_registry import ComponentRegistry
 
 
-# =============================================================================
-# UI HELPER FUNCTIONS (Display formatting ONLY - no business logic)
-# =============================================================================
+# =============================
+# Backend functions
+# (hooked to your existing managers)
+# =============================
 
-def format_results_html(results: List[Dict[str, Any]]) -> str:
+def load_config_list() -> List[str]:
+    # Use your config manager here
+    from core.playground_config_manager import PlaygroundConfigManager
+    return [c["name"] for c in PlaygroundConfigManager.list_configs()]
+
+
+def load_config(config_name: str) -> Dict[str, Any]:
+    from core.playground_config_manager import PlaygroundConfigManager
+    all_configs = PlaygroundConfigManager.list_configs()
+    match = next((c for c in all_configs if c["name"] == config_name), None)
+    if not match:
+        return {}
+    return PlaygroundConfigManager.load_config(match["filename"])
+
+def save_config(
+    config_name,
+    config_desc,
+    vectorstore,
+    distance_metric,
+    collection_name,
+    persist_dir,
+    chunking_strategy,
+    chunk_size,
+    overlap,
+    similarity_threshold,
+    max_chunk_size,
+    embedding_provider,
+    embedding_model,
+    device,
+    batch_size,
+    retrieval_strategies,
+    top_k,
+    hybrid_alpha,
+    session_id,  # still passed in, but no longer used for filename
+):
+    from core.playground_config_manager import PlaygroundConfigManager
+
+    # --- Build date-based suffix ---
+    today_tag = datetime.now().strftime("%d%m%Y")   # e.g. "25032025"
+
+    full_name = f"{config_name}_{today_tag}" if config_name else today_tag
+
+    # --- Build config dict ---
+    config = {
+        "name": full_name,                      # store full name with date
+        "description": config_desc,
+        "vectorstore": {
+            "provider": vectorstore,
+            "distance_metric": distance_metric,
+            "collection_name": collection_name,
+            "persist_directory": persist_dir,
+        },
+        "chunking": {
+            "strategy": chunking_strategy,
+            chunking_strategy: {
+                "chunk_size": chunk_size,
+                "overlap": overlap,
+                "similarity_threshold": similarity_threshold,
+                "max_chunk_size": max_chunk_size,
+            },
+        },
+        "embeddings": {
+            "provider": embedding_provider,
+            "model_name": embedding_model,
+            "device": device,
+            "batch_size": batch_size,
+        },
+        "retrieval": {
+            "strategies": retrieval_strategies,
+            "top_k": top_k,
+            "hybrid": {"alpha": hybrid_alpha} if "Hybrid" in retrieval_strategies else {},
+        },
+    }
+
+    PlaygroundConfigManager.save_config(full_name, today_tag, config)
+
+    # UI status message
+    return f"✅ Config **{full_name}** saved on `{today_tag}`."
+
+
+def save_as_template(template_name: str, config_name: str, session_id: str):
+    if not template_name:
+        return "⚠️ Please enter a template name."
+
+    from core.playground_config_manager import PlaygroundConfigManager
+    all_configs = PlaygroundConfigManager.list_configs()
+    match = next((c for c in all_configs if c["name"] == config_name), None)
+    if not match:
+        return "⚠️ No config with this name found for saving as template."
+
+    cfg = PlaygroundConfigManager.load_config(match["filename"])
+
+    import yaml
+
+    path = Path("configs/templates") / f"{template_name}.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        yaml.dump(cfg, f)
+
+    return f"⭐ Template **{template_name}** created from config **{config_name}**."
+
+
+def run_pipeline(
+    user_query: str,
+    config_name: str,
+    session_id: str,
+):
     """
-    Format query results as beautiful HTML cards.
-
-    Phase 2 Compliant: Display formatting only, no business logic.
+    Run the RAG pipeline with the current config and query.
+    Replace this with your actual retrieval + LLM call.
     """
-    if not results:
-        return """
-        <div style='text-align: center; padding: 40px; color: #777;'>
-            <h3>No results found</h3>
-            <p>Try adjusting your query or filters</p>
-        </div>
-        """
+    if not user_query.strip():
+        return "⚠️ Please enter a question to run.", [], "No query provided."
 
-    cards_html = ""
-    for i, result in enumerate(results, 1):
-        score = result.get('score', 0.0)
-        doc_text = result.get('document', '')
-        metadata = result.get('metadata', {})
+    # TODO: call your real RAG stack here
+    answer = (
+        f"Demo answer for: **{user_query}**\n\n"
+        f"_Using config_ `{config_name or 'Current (unsaved) config'}` "
+        f"_session_ `{session_id}`."
+    )
 
-        # Truncate text for display
-        display_text = doc_text[:300] + "..." if len(doc_text) > 300 else doc_text
+    # Demo retrieved chunks
+    demo_chunks = [
+        {"doc_id": 1, "score": 0.87, "snippet": "Chunk 1 text snippet..."},
+        {"doc_id": 2, "score": 0.82, "snippet": "Chunk 2 text snippet..."},
+    ]
+    logs = (
+        "Demo pipeline executed.\nSteps:\n"
+        "1) Embed query\n2) Retrieve chunks\n3) Generate answer"
+    )
 
-        # Color-code by score
-        if score >= 0.8:
-            score_color = SUCCESS_GREEN
-            score_label = "Excellent Match"
-        elif score >= 0.6:
-            score_color = PRIMARY_BLUE
-            score_label = "Good Match"
-        else:
-            score_color = "#FB8C00"
-            score_label = "Fair Match"
-
-        card_html = f"""
-        <div style='
-            border-left: 4px solid {score_color};
-            background: white;
-            padding: 20px;
-            margin-bottom: 15px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        '>
-            <div style='display: flex; justify-content: space-between; margin-bottom: 10px;'>
-                <div style='font-weight: bold; color: {DARK_GRAY}; font-size: 16px;'>
-                    Result #{i}
-                </div>
-                <div style='
-                    background: {score_color};
-                    color: white;
-                    padding: 4px 12px;
-                    border-radius: 12px;
-                    font-size: 12px;
-                    font-weight: bold;
-                '>
-                    {score:.2f} - {score_label}
-                </div>
-            </div>
-
-            <div style='color: {DARK_GRAY}; line-height: 1.6; margin-bottom: 12px;'>
-                {display_text}
-            </div>
-
-            <div style='
-                display: flex;
-                gap: 15px;
-                font-size: 12px;
-                color: #666;
-                padding-top: 10px;
-                border-top: 1px solid {LIGHT_GRAY};
-            '>
-                <span><strong>Domain:</strong> {metadata.get('domain', 'N/A')}</span>
-                <span><strong>Doc:</strong> {metadata.get('doc_id', 'N/A')}</span>
-                <span><strong>Page:</strong> {metadata.get('page_num', 'N/A')}</span>
-                <span><strong>Type:</strong> {metadata.get('doc_type', 'N/A')}</span>
-            </div>
-        </div>
-        """
-        cards_html += card_html
-
-    return cards_html
+    return answer, demo_chunks, logs
 
 
-def format_stats_html(results: List[Dict], query_time: float) -> str:
-    """Format query statistics."""
-    if not results:
-        return ""
+# =============================
+# UI / Playground Layout
+# =============================
 
-    avg_score = sum(r.get('score', 0) for r in results) / len(results)
+def build_playground() -> gr.Blocks:
+    # ---- Registry-driven options & defaults ----
+    vectorstore_providers = ComponentRegistry.get_vectorstore_providers()
+    distance_metrics = ComponentRegistry.get_distance_metrics()
+    chunking_strategies = ComponentRegistry.get_chunking_strategies()
+    embedding_providers = ComponentRegistry.get_embedding_providers()  # dict: provider -> [models]
+    device_options = ComponentRegistry.get_device_options()
+    retrieval_strategies_options = ComponentRegistry.get_retrieval_strategies()
 
-    stats_html = f"""
-    <div style='
-        display: flex;
-        gap: 20px;
-        padding: 15px;
-        background: {LIGHT_GRAY};
-        border-radius: 8px;
-        margin-bottom: 20px;
-    '>
-        <div style='text-align: center;'>
-            <div style='font-size: 24px; font-weight: bold; color: {PRIMARY_BLUE};'>
-                {len(results)}
-            </div>
-            <div style='font-size: 12px; color: #666;'>Results Found</div>
-        </div>
-        <div style='text-align: center;'>
-            <div style='font-size: 24px; font-weight: bold; color: {SUCCESS_GREEN};'>
-                {avg_score:.2f}
-            </div>
-            <div style='font-size: 12px; color: #666;'>Avg Score</div>
-        </div>
-        <div style='text-align: center;'>
-            <div style='font-size: 24px; font-weight: bold; color: {SECONDARY_TEAL};'>
-                {query_time:.2f}s
-            </div>
-            <div style='font-size: 12px; color: #666;'>Query Time</div>
-        </div>
-    </div>
-    """
-    return stats_html
+    default_vectorstore = vectorstore_providers[0] if vectorstore_providers else None
+    default_distance_metric = distance_metrics[0] if distance_metrics else None
+    default_chunking_strategy = (
+        chunking_strategies[0] if chunking_strategies else "fixed"
+    )
 
+    provider_choices = list(embedding_providers.keys())
+    default_provider = provider_choices[0] if provider_choices else None
+    default_models = embedding_providers.get(default_provider, []) if default_provider else []
+    default_model = default_models[0] if default_models else None
 
-# =============================================================================
-# QUERY HANDLER (Phase 2 Compliant - Service call ONLY)
-# =============================================================================
+    default_device = device_options[0] if device_options else "cpu"
+    default_retrieval_strategies = (
+        [retrieval_strategies_options[0]] if retrieval_strategies_options else []
+    )
 
-def query_handler(
-        query_text: str,
-        domain: str,
-        strategy: str,
-        top_k: int,
-        include_deprecated: bool
-) -> tuple:
-    """
-    Handle query submission.
+    with gr.Blocks(title="RAG Playground - MVP") as demo:
+        # ---- Session state (avoid passing raw strings as inputs) ----
+        raw_session_id = str(uuid.uuid4())[:8]
+        session_id = gr.State(raw_session_id)
 
-    Phase 2 Compliant:
-    - NO business logic
-    - ONLY calls service
-    - Display formatting only
+        # -----------------------------------------------------------------
+        # Header bar: title + one-line description + config actions
+        # -----------------------------------------------------------------
+        with gr.Row():
+            with gr.Column(scale=3):
+                gr.Markdown("## 🔧 RAG Playground")
+                gr.Markdown(
+                    "Configure, save, and test your retrieval pipeline. "
+                    "Designed to be usable even without training."
+                )
+                gr.Markdown(f"**Session ID:** `{raw_session_id}`")
+            with gr.Column(scale=2):
+                with gr.Row():
+                    # Dropdown to select config when loading
+                    config_selector = gr.Dropdown(
+                        choices=load_config_list(),
+                        label="Available configs",
+                        value=None,
+                        interactive=True,
+                    )
+                with gr.Row():
+                    load_btn = gr.Button("📂 Load config")
+                    save_btn = gr.Button("💾 Save config")
+                    save_tpl_btn = gr.Button("⭐ Save as template")
 
-    Returns:
-        tuple: (stats_html, results_html, status_message)
-    """
-    try:
-        # Validate input (basic UI validation)
-        if not query_text or not query_text.strip():
-            return (
-                "",
-                "",
-                "⚠️ Please enter a query"
+        gr.Markdown("---")
+
+        # Status / feedback area (visible under header)
+        config_status = gr.Markdown("ℹ️ No config actions yet.")
+
+        # -----------------------------------------------------------------
+        # Main area: LEFT = configuration tabs, RIGHT = test/debug tabs
+        # -----------------------------------------------------------------
+        with gr.Row():
+            # ---------------- LEFT: Configuration ----------------
+            with gr.Column(scale=3):
+                # Shared config name & description at top
+                gr.Markdown("### ⚙️ Configuration")
+
+                config_name = gr.Textbox(
+                    label="Config name",
+                    placeholder="Example: Legal_Docs_Chroma_v1",
+                )
+                config_desc = gr.Textbox(
+                    label="Description",
+                    placeholder="Short description of what this config is for.",
+                    lines=2,
+                )
+
+                # ---- Tab 1: Data & Vector Store ----
+                with gr.Tab("1. Data & Vector Store"):
+                    vectorstore = gr.Dropdown(
+                        vectorstore_providers,
+                        label="Vector store",
+                        value=default_vectorstore,
+                    )
+                    distance_metric = gr.Dropdown(
+                        distance_metrics,
+                        label="Distance metric",
+                        value=default_distance_metric,
+                    )
+                    collection_name = gr.Textbox(
+                        label="Collection name",
+                        placeholder="Name for this dataset in the vector store.",
+                    )
+                    persist_dir = gr.Textbox(
+                        label="Persist directory",
+                        placeholder="./vector_store",
+                    )
+
+                # ---- Tab 2: Chunking ----
+                with gr.Tab("2. Chunking"):
+                    chunking_strategy = gr.Dropdown(
+                        chunking_strategies,
+                        label="Chunking strategy",
+                        value=default_chunking_strategy,
+                    )
+
+                    # Show/hide depending on strategy
+                    chunk_size = gr.Slider(
+                        100,
+                        2000,
+                        value=500,
+                        step=50,
+                        label="Chunk Size",
+                        visible=True,
+                    )
+                    overlap = gr.Slider(
+                        0,
+                        200,
+                        value=50,
+                        step=10,
+                        label="Overlap",
+                        visible=True,
+                    )
+                    similarity_threshold = gr.Slider(
+                        0.0,
+                        1.0,
+                        value=0.7,
+                        step=0.01,
+                        label="Similarity Threshold",
+                        visible=False,
+                    )
+                    max_chunk_size = gr.Slider(
+                        500,
+                        3000,
+                        value=1000,
+                        step=50,
+                        label="Max Chunk Size",
+                        visible=False,
+                    )
+
+                # ---- Tab 3: Embeddings & Device ----
+                with gr.Tab("3. Embeddings & Device"):
+                    embedding_provider = gr.Dropdown(
+                        provider_choices,
+                        label="Embedding provider",
+                        value=default_provider,
+                    )
+                    embedding_model = gr.Dropdown(
+                        default_models,
+                        label="Embedding model",
+                        value=default_model,
+                    )
+                    device = gr.Dropdown(
+                        device_options,
+                        label="Device",
+                        value=default_device,
+                    )
+                    with gr.Accordion("Performance tuning", open=False):
+                        batch_size = gr.Slider(
+                            1,
+                            256,
+                            value=32,
+                            step=1,
+                            label="Batch size",
+                        )
+
+                # ---- Tab 4: Retrieval ----
+                with gr.Tab("4. Retrieval"):
+                    retrieval_strategies = gr.CheckboxGroup(
+                        retrieval_strategies_options,
+                        label="Retrieval strategies",
+                        value=default_retrieval_strategies,
+                    )
+                    top_k = gr.Slider(
+                        1,
+                        50,
+                        value=10,
+                        step=1,
+                        label="Top K",
+                    )
+                    hybrid_alpha = gr.Slider(
+                        0.0,
+                        1.0,
+                        value=0.5,
+                        step=0.05,
+                        label="Hybrid α (only used for Hybrid strategy)",
+                    )
+                    gr.Markdown(
+                        "_Tip: Enable **Hybrid** above to make use of the α slider._"
+                    )
+
+            # ---------------- RIGHT: Playground / Testing ----------------
+            with gr.Column(scale=2):
+                gr.Markdown("### 🧪 Playground")
+
+                with gr.Tab("Test query"):
+                    current_config_pill = gr.Markdown(
+                        "Using config: _current session config_"
+                    )
+
+                    user_query = gr.Textbox(
+                        label="Ask a question",
+                        placeholder="Type your question here...",
+                        lines=4,
+                    )
+                    run_btn = gr.Button("▶️ Run with current config")
+
+                    answer_box = gr.Markdown(label="Answer")
+
+                with gr.Tab("Debug & Logs"):
+                    retrieved_chunks_df = gr.Dataframe(
+                        headers=["doc_id", "score", "snippet"],
+                        datatype=["number", "number", "str"],
+                        row_count=2,
+                        col_count=3,
+                        interactive=False,
+                        label="Retrieved chunks",
+                    )
+                    debug_log = gr.Textbox(
+                        label="Logs",
+                        lines=10,
+                        interactive=False,
+                    )
+
+        # -----------------------------------------------------------------
+        # Dynamic behaviors (models, chunking params)
+        # -----------------------------------------------------------------
+
+        def update_embedding_models(provider: str):
+            models = ComponentRegistry.get_embedding_providers().get(provider, [])
+            return gr.update(
+                choices=models,
+                value=models[0] if models else None,
             )
 
-        # Build metadata filters
-        filters = {}
-        if domain != "All":
-            filters["domain"] = domain.lower()
-
-        if not include_deprecated:
-            filters["deprecated_flag"] = False
-
-        # ✅ PHASE 2 COMPLIANT: Call service ONLY
-        start_time = datetime.now()
-
-        results = service.query_documents(
-            query_text=query_text,
-            metadata_filters=filters if filters else None,
-            top_k=top_k
+        embedding_provider.change(
+            update_embedding_models,
+            inputs=[embedding_provider],
+            outputs=[embedding_model],
         )
 
-        query_time = (datetime.now() - start_time).total_seconds()
+        def update_chunking_params(strategy: str):
+            # Example logic from documentation:
+            # - "recursive" & "fixed" -> chunk_size + overlap
+            # - "semantic" -> similarity_threshold + max_chunk_size
+            if strategy == "semantic":
+                return (
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                    gr.update(visible=True),
+                    gr.update(visible=True),
+                )
+            else:  # "fixed" or "recursive" or others
+                return (
+                    gr.update(visible=True),
+                    gr.update(visible=True),
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                )
 
-        # Format results for display (formatting only, no business logic)
-        stats_html = format_stats_html(results, query_time)
-        results_html = format_results_html(results)
-
-        status_msg = f"✅ Found {len(results)} results in {query_time:.2f}s"
-
-        return stats_html, results_html, status_msg
-
-    except Exception as e:
-        error_msg = f"❌ Query failed: {str(e)}"
-        return "", "", error_msg
-
-
-# =============================================================================
-# GRADIO UI - QUERY INTERFACE
-# =============================================================================
-
-def create_query_interface():
-    """Create the Query tab interface with expert UI/UX."""
-
-    with gr.Blocks() as query_tab:
-        # Header
-        gr.Markdown(
-            """
-            # 🔍 Query Documents
-            Search across your multi-domain document collection using advanced hybrid retrieval.
-            """,
-            elem_id="header"
+        chunking_strategy.change(
+            update_chunking_params,
+            inputs=[chunking_strategy],
+            outputs=[chunk_size, overlap, similarity_threshold, max_chunk_size],
         )
 
-        # Main layout: Sidebar + Content
-        with gr.Row():
-            # LEFT SIDEBAR - Filters and Options
-            with gr.Column(scale=1):
-                gr.Markdown("### ⚙️ Query Settings")
+        # -----------------------------------------------------------------
+        # Wiring interactions: Load, Save, Save as Template, Run
+        # -----------------------------------------------------------------
 
-                # Domain selector
-                domain_selector = gr.Dropdown(
-                    choices=["All", "HR", "Finance", "Engineering"],
-                    value="All",
-                    label="🏢 Domain",
-                    info="Filter results by domain"
+        # 1. Load config
+
+        def on_load_config(selected_name: str, session_id_value: str):
+            if not selected_name:
+                # return same number of outputs as below
+                return (
+                    "⚠️ Please select a config to load.",
+                    gr.update(),  # config_name
+                    gr.update(),  # config_desc
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
                 )
 
-                # Retrieval strategy
-                strategy_selector = gr.Dropdown(
-                    choices=["hybrid", "vector_similarity", "bm25"],
-                    value="hybrid",
-                    label="🎯 Retrieval Strategy",
-                    info="Hybrid = semantic + keyword (recommended)"
+            cfg = load_config(selected_name)
+            status = f"📂 Loaded config **{selected_name}** for session `{session_id_value}`."
+
+            vectorstore_cfg = cfg.get("vectorstore", {}) or {}
+            chunking_cfg = cfg.get("chunking", {}) or {}
+            embeddings_cfg = cfg.get("embeddings", {}) or {}
+            retrieval_cfg = cfg.get("retrieval", {}) or {}
+
+            # Vectorstore
+            vs_provider_val = vectorstore_cfg.get("provider", default_vectorstore)
+            vs_distance_val = vectorstore_cfg.get("distance_metric", default_distance_metric)
+            vs_collection_val = vectorstore_cfg.get("collection_name", "")
+            vs_persist_val = vectorstore_cfg.get("persist_directory", "")
+
+            # Chunking
+            strategy_val = chunking_cfg.get("strategy", default_chunking_strategy)
+            strategy_params = chunking_cfg.get(strategy_val, {}) or {}
+
+            chunk_size_val = strategy_params.get("chunk_size", 500)
+            overlap_val = strategy_params.get("overlap", 50)
+            similarity_threshold_val = strategy_params.get("similarity_threshold", 0.7)
+            max_chunk_size_val = strategy_params.get("max_chunk_size", 1000)
+
+            # Embeddings
+            emb_provider_val = embeddings_cfg.get("provider", default_provider)
+            emb_model_val = embeddings_cfg.get("model_name", default_model)
+            device_val = embeddings_cfg.get("device", default_device)
+            batch_size_val = embeddings_cfg.get("batch_size", 32)
+
+            # Retrieval
+            retrieval_strats_val = retrieval_cfg.get(
+                "strategies", default_retrieval_strategies
+            )
+            top_k_val = retrieval_cfg.get("top_k", 10)
+            hybrid_cfg = retrieval_cfg.get("hybrid", {}) or {}
+            hybrid_alpha_val = hybrid_cfg.get("alpha", 0.5)
+
+            # 👇 NOTE: second = config_name, third = description
+            return (
+                status,
+                cfg.get("name", selected_name),  # config_name
+                cfg.get("description", ""),  # config_desc
+                vs_provider_val,
+                vs_distance_val,
+                vs_collection_val,
+                vs_persist_val,
+                strategy_val,
+                chunk_size_val,
+                overlap_val,
+                similarity_threshold_val,
+                max_chunk_size_val,
+                emb_provider_val,
+                emb_model_val,
+                device_val,
+                batch_size_val,
+                retrieval_strats_val,
+                top_k_val,
+                hybrid_alpha_val,
+            )
+
+        def on_load_config(selected_name: str, session_id_value: str):
+            if not selected_name:
+                # return same number of outputs as below
+                return (
+                    "⚠️ Please select a config to load.",
+                    gr.update(),  # config_name
+                    gr.update(),  # config_desc
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
                 )
 
-                # Top K slider
-                top_k_slider = gr.Slider(
-                    minimum=1,
-                    maximum=50,
-                    value=10,
-                    step=1,
-                    label="📊 Number of Results",
-                    info="How many results to return"
-                )
+            cfg = load_config(selected_name)
+            status = f"📂 Loaded config **{selected_name}** for session `{session_id_value}`."
 
-                # Advanced filters
-                gr.Markdown("### 🔧 Advanced Filters")
+            vectorstore_cfg = cfg.get("vectorstore", {}) or {}
+            chunking_cfg = cfg.get("chunking", {}) or {}
+            embeddings_cfg = cfg.get("embeddings", {}) or {}
+            retrieval_cfg = cfg.get("retrieval", {}) or {}
 
-                include_deprecated = gr.Checkbox(
-                    label="Include deprecated documents",
-                    value=False
-                )
+            # Vectorstore
+            vs_provider_val = vectorstore_cfg.get("provider", default_vectorstore)
+            vs_distance_val = vectorstore_cfg.get("distance_metric", default_distance_metric)
+            vs_collection_val = vectorstore_cfg.get("collection_name", "")
+            vs_persist_val = vectorstore_cfg.get("persist_directory", "")
 
-            # RIGHT CONTENT AREA - Query and Results
-            with gr.Column(scale=3):
-                # Query input
-                query_input = gr.Textbox(
-                    label="",
-                    placeholder="Enter your query... (e.g., 'What is the vacation policy?')",
-                    lines=3,
-                    max_lines=5
-                )
+            # Chunking
+            strategy_val = chunking_cfg.get("strategy", default_chunking_strategy)
+            strategy_params = chunking_cfg.get(strategy_val, {}) or {}
 
-                # Search button
-                search_btn = gr.Button(
-                    "🔍 Search",
-                    variant="primary",
-                    size="lg"
-                )
+            chunk_size_val = strategy_params.get("chunk_size", 500)
+            overlap_val = strategy_params.get("overlap", 50)
+            similarity_threshold_val = strategy_params.get("similarity_threshold", 0.7)
+            max_chunk_size_val = strategy_params.get("max_chunk_size", 1000)
 
-                # Status message
-                status_msg = gr.Markdown("")
+            # Embeddings
+            emb_provider_val = embeddings_cfg.get("provider", default_provider)
+            emb_model_val = embeddings_cfg.get("model_name", default_model)
+            device_val = embeddings_cfg.get("device", default_device)
+            batch_size_val = embeddings_cfg.get("batch_size", 32)
 
-                # Query statistics
-                stats_display = gr.HTML("")
+            # Retrieval
+            retrieval_strats_val = retrieval_cfg.get(
+                "strategies", default_retrieval_strategies
+            )
+            top_k_val = retrieval_cfg.get("top_k", 10)
+            hybrid_cfg = retrieval_cfg.get("hybrid", {}) or {}
+            hybrid_alpha_val = hybrid_cfg.get("alpha", 0.5)
 
-                # Results display
-                results_display = gr.HTML("")
+            # 👇 NOTE: second = config_name, third = description
+            return (
+                status,
+                cfg.get("name", selected_name),  # config_name
+                cfg.get("description", ""),  # config_desc
+                vs_provider_val,
+                vs_distance_val,
+                vs_collection_val,
+                vs_persist_val,
+                strategy_val,
+                chunk_size_val,
+                overlap_val,
+                similarity_threshold_val,
+                max_chunk_size_val,
+                emb_provider_val,
+                emb_model_val,
+                device_val,
+                batch_size_val,
+                retrieval_strats_val,
+                top_k_val,
+                hybrid_alpha_val,
+            )
 
-        # Wire up the search button
-        search_btn.click(
-            fn=query_handler,
-            inputs=[
-                query_input,
-                domain_selector,
-                strategy_selector,
-                top_k_slider,
-                include_deprecated
+        load_btn.click(
+            on_load_config,
+            inputs=[config_selector, session_id],
+            outputs=[
+                config_status,
+                config_name,  # 👈 now updated from loaded config
+                config_desc,
+                vectorstore,
+                distance_metric,
+                collection_name,
+                persist_dir,
+                chunking_strategy,
+                chunk_size,
+                similarity_threshold,
+                overlap,
+                max_chunk_size,
+                embedding_provider,
+                embedding_model,
+                device,
+                batch_size,
+                retrieval_strategies,
+                top_k,
+                hybrid_alpha,
             ],
-            outputs=[stats_display, results_display, status_msg]
+        )
+        # 2. Save config
+        save_btn.click(
+            save_config,
+            inputs=[
+                config_name,
+                config_desc,
+                vectorstore,
+                distance_metric,
+                collection_name,
+                persist_dir,
+                chunking_strategy,
+                chunk_size,
+                overlap,
+                similarity_threshold,
+                max_chunk_size,
+                embedding_provider,
+                embedding_model,
+                device,
+                batch_size,
+                retrieval_strategies,
+                top_k,
+                hybrid_alpha,
+                session_id,  # ✅ gr.State, not raw string
+            ],
+            outputs=config_status,
         )
 
-        # Example queries
-        gr.Markdown(
-            """
-            ### 💡 Example Queries
-            - "What is the vacation policy?"
-            - "401k employer matching contribution"
-            - "How to submit expense reports?"
-            - "Remote work policy guidelines"
-            """
+        # 3. Save as template
+        template_name_for_save = gr.Textbox(
+            label="Template name (for 'Save as template')",
+            placeholder="Example: Default_PDF_RAG",
+            lines=1,
         )
 
-    return query_tab
+        save_tpl_btn.click(
+            save_as_template,
+            inputs=[template_name_for_save, config_name, session_id],
+            outputs=config_status,
+        )
+
+        # 4. Run pipeline
+        def on_run_pipeline(
+            user_query_value: str,
+            config_name_value: str,
+            session_id_value: str,
+        ):
+            answer, chunks, logs = run_pipeline(
+                user_query_value,
+                config_name_value,
+                session_id_value,
+            )
+            # Convert list[dict] -> rows for dataframe
+            rows = [
+                [c.get("doc_id"), c.get("score"), c.get("snippet")] for c in chunks
+            ]
+            pill_text = (
+                f"Using config: _{config_name_value or 'Current (unsaved) config'}_"
+            )
+            return pill_text, answer, rows, logs
+
+        run_btn.click(
+            on_run_pipeline,
+            inputs=[user_query, config_name, session_id],
+            outputs=[current_config_pill, answer_box, retrieved_chunks_df, debug_log],
+        )
+
+    return demo
 
 
-# =============================================================================
-# MAIN APPLICATION
-# =============================================================================
-
-# Custom CSS for professional styling
-custom_css = """
-#header {
-    background: linear-gradient(135deg, #1E88E5 0%, #00897B 100%);
-    color: white;
-    padding: 30px;
-    border-radius: 10px;
-    margin-bottom: 20px;
-}
-
-.gr-button-primary {
-    background: #1E88E5 !important;
-    border: none !important;
-}
-
-.gr-button-primary:hover {
-    background: #1565C0 !important;
-}
-"""
-
-# Create main app
-with gr.Blocks(
-        title="Multi-Domain RAG System",
-        theme=gr.themes.Soft(primary_hue="blue", secondary_hue="teal"),
-        css=custom_css
-) as app:
-    # App header
-    gr.Markdown(
-        """
-        # 🏢 Multi-Domain RAG System
-        **Phase 2 Enterprise Edition** | Powered by Hybrid Retrieval
-        """,
-        elem_id="header"
-    )
-
-    # Main tabs
-    with gr.Tabs():
-        # TAB 1: QUERY (Phase 1 - Complete)
-        with gr.Tab("🔍 Query", id="query_tab"):
-            create_query_interface()
-
-        # TAB 2: UPLOAD (Phase 2 - Coming next)
-        with gr.Tab("📤 Upload Documents", id="upload_tab"):
-            gr.Markdown("## 📤 Upload Documents\n*Coming in Phase 2*")
-
-        # TAB 3: MANAGE (Phase 3 - Future)
-        with gr.Tab("⚙️ Manage Parameters", id="manage_tab"):
-            gr.Markdown("## ⚙️ Manage Parameters\n*Coming in Phase 3*")
-
-        # TAB 4: DOMAINS (Phase 4 - Future)
-        with gr.Tab("📁 Domain Management", id="domains_tab"):
-            gr.Markdown("## 📁 Domain Management\n*Coming in Phase 4*")
-
-        # TAB 5: PLAYGROUND (Phase 5 - Future)
-        with gr.Tab("🧪 Playground", id="playground_tab"):
-            gr.Markdown("## 🧪 Playground\n*Coming in Phase 5*")
-
-    # Footer
-    gr.Markdown(
-        """
-        ---
-        **Status:** ✅ Phase 1 Complete | **Docs Indexed:** 1,234 | **Last Updated:** Nov 24, 2025
-        """
-    )
-
-# Launch app
 if __name__ == "__main__":
-    app.launch(
-        server_name="127.0.0.1",
-        server_port=7862,
-        share=False,
-        show_error=True
-    )
+    app = build_playground()
+    app.launch()
