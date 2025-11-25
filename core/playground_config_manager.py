@@ -74,6 +74,34 @@ class PlaygroundConfigManager:
         path.unlink()
         return True, f"Deleted config and (if implemented) vector DB collection: {collection}"
 
+    def save_as_template(
+            template_name: str,
+            config_name: str,
+            session_id: str,  # you can ignore this inside if you don't need it yet
+    ):
+        from core.playground_config_manager import PlaygroundConfigManager
+
+        if not template_name:
+            return "⚠️ Please enter a template name."
+
+        # Find the config by its name
+        all_configs = PlaygroundConfigManager.list_configs()
+        match = next((c for c in all_configs if c["name"] == config_name), None)
+        if not match:
+            return f"⚠️ No config named **{config_name}** found to save as template."
+
+        # Load that config using the stored filename
+        cfg = PlaygroundConfigManager.load_config(match["filename"])
+
+        # Write it as a YAML template
+        path = Path("configs/templates") / f"{template_name}.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            yaml.dump(cfg, f)
+
+        return f"⭐ Template **{template_name}** created from config **{config_name}** at `{path}`."
+
+
     ###############################################
     # Housekeeping/Utilities
     ###############################################

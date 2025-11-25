@@ -61,7 +61,7 @@ def advance_to_step(step_idx, *args):
     # Only make the selected step visible (set all others to False)
     return [gr.update(visible=(i == step_idx)) for i in range(4)]
 
-def save_as_template(template_name, loaded_cfg_filename):
+def save_as_template(template_name, loaded_cfg_filename,session_id):
     cfg = PlaygroundConfigManager.load_config(loaded_cfg_filename)
     if not cfg: return "❌ Config not loaded or found."
     path = Path("configs/templates") / f"{template_name}.yaml"

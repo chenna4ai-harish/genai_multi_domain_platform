@@ -12,6 +12,26 @@ class ComponentRegistry:
             "openai": ["text-embedding-ada-002"],
             "gemini": ["models/embedding-001"]
         }
+
+    @staticmethod
+    def get_llm_providers():
+        # provider -> list of model names
+        return {
+            "openai": [
+                "gpt-4o",
+                "gpt-4.1-mini",
+                "gpt-3.5-turbo",
+            ],
+            "gemini": [
+                "models/gemini-1.5-flash",
+                "models/gemini-1.5-pro",
+            ],
+            # "ollama": [
+            #     "llama3",
+            #     "mistral",
+            # ],
+        }
+
     @staticmethod
     def get_retrieval_strategies():
         return ["hybrid", "vectorsimilarity", "bm25"]

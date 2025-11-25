@@ -3,6 +3,7 @@ import uuid
 from typing import List, Dict, Any
 from pathlib import Path
 from datetime import datetime
+import yaml
 
 from core.registry.component_registry import ComponentRegistry
 
@@ -45,6 +46,10 @@ def save_config(
     retrieval_strategies,
     top_k,
     hybrid_alpha,
+    llm_provider,
+    llm_model,
+    temperature,
+    max_tokens,
     session_id,  # still passed in, but no longer used for filename
 ):
     from core.playground_config_manager import PlaygroundConfigManager
@@ -79,10 +84,17 @@ def save_config(
             "device": device,
             "batch_size": batch_size,
         },
+
         "retrieval": {
             "strategies": retrieval_strategies,
             "top_k": top_k,
             "hybrid": {"alpha": hybrid_alpha} if "Hybrid" in retrieval_strategies else {},
+        },
+        "llm_rerank": {
+            "provider": llm_provider,
+            "model_name": llm_model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
         },
     }
 
@@ -92,27 +104,40 @@ def save_config(
     return f"✅ Config **{full_name}** saved on `{today_tag}`."
 
 
+
 def save_as_template(template_name: str, config_name: str, session_id: str):
+    from core.playground_config_manager import PlaygroundConfigManager
+
     if not template_name:
         return "⚠️ Please enter a template name."
 
-    from core.playground_config_manager import PlaygroundConfigManager
+    # Load all configs
     all_configs = PlaygroundConfigManager.list_configs()
-    match = next((c for c in all_configs if c["name"] == config_name), None)
-    if not match:
-        return "⚠️ No config with this name found for saving as template."
 
+    # Try matching by name, playground_name OR filename (covers all cases)
+    match = next(
+        (
+            c for c in all_configs
+            if c.get("name") == config_name
+            or c.get("playground_name") == config_name
+            or c.get("filename") == config_name
+        ),
+        None,
+    )
+
+    if not match:
+        return f"⚠️ No config named **{config_name}** found to save as template."
+
+    # Load the actual YAML config content
     cfg = PlaygroundConfigManager.load_config(match["filename"])
 
-    import yaml
-
+    # Write the template file
     path = Path("configs/templates") / f"{template_name}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         yaml.dump(cfg, f)
 
     return f"⭐ Template **{template_name}** created from config **{config_name}**."
-
 
 def run_pipeline(
     user_query: str,
@@ -169,6 +194,12 @@ def build_playground() -> gr.Blocks:
     default_provider = provider_choices[0] if provider_choices else None
     default_models = embedding_providers.get(default_provider, []) if default_provider else []
     default_model = default_models[0] if default_models else None
+
+    llm_providers = ComponentRegistry.get_llm_providers()  # dict
+    llm_provider_choices = list(llm_providers.keys())
+    default_llm_provider = llm_provider_choices[0] if llm_provider_choices else None
+    default_llm_models = llm_providers.get(default_llm_provider, []) if default_llm_provider else []
+    default_llm_model = default_llm_models[0] if default_llm_models else None
 
     default_device = device_options[0] if device_options else "cpu"
     default_retrieval_strategies = (
@@ -343,6 +374,25 @@ def build_playground() -> gr.Blocks:
                         "_Tip: Enable **Hybrid** above to make use of the α slider._"
                     )
 
+                # ---- Tab 5: LLM ----
+                with gr.Tab("5. LLM"):
+                    llm_provider = gr.Dropdown(
+                        llm_provider_choices,
+                        label="LLM provider",
+                        value=default_llm_provider,
+                    )
+                    llm_model = gr.Dropdown(
+                        default_llm_models,
+                        label="LLM model",
+                        value=default_llm_model,
+                    )
+                    temperature = gr.Slider(
+                        0.0, 1.0, value=0.2, step=0.01, label="Temperature"
+                    )
+                    max_tokens = gr.Slider(
+                        128, 4096, value=512, step=64, label="Max tokens"
+                    )
+
             # ---------------- RIGHT: Playground / Testing ----------------
             with gr.Column(scale=2):
                 gr.Markdown("### 🧪 Playground")
@@ -391,6 +441,16 @@ def build_playground() -> gr.Blocks:
             update_embedding_models,
             inputs=[embedding_provider],
             outputs=[embedding_model],
+        )
+
+        def update_llm_models(provider: str):
+            models = ComponentRegistry.get_llm_providers().get(provider, [])
+            return gr.update(choices=models, value=models[0] if models else None)
+
+        llm_provider.change(
+            update_llm_models,
+            inputs=[llm_provider],
+            outputs=[llm_model],
         )
 
         def update_chunking_params(strategy: str):
