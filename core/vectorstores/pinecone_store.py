@@ -455,7 +455,7 @@ class PineconeStore(VectorStoreInterface):
         bm25_index = BM25Retrieval(corpus=corpus, doc_ids=doc_ids)
 
         hybrid_retriever = HybridRetrieval(
-            vector_store=store,
+            vectorstore=store,
             embedding_model=embedder,
             bm25_index=bm25_index,
             alpha=0.7

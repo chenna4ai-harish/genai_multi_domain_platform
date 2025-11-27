@@ -51,7 +51,7 @@ Example Usage:
 from core.retrievals.bm25_retrieval import BM25Retrieval
 
 # Get corpus from vector store (Phase 2)
-corpus, doc_ids = vector_store.get_all_documents()
+corpus, doc_ids = vectorstore.get_all_documents()
 
 # Initialize BM25 index
 bm25 = BM25Retrieval(corpus=corpus, doc_ids=doc_ids)
@@ -131,7 +131,7 @@ class BM25Retrieval(RetrievalInterface):
     Parameters:
     -----------
     corpus : List[str]
-        List of all document texts (from vector_store.get_all_documents())
+        List of all document texts (from vectorstore.get_all_documents())
     doc_ids : List[str]
         List of corresponding document IDs (same order as corpus)
     metadata : List[Dict], optional
@@ -146,7 +146,7 @@ class BM25Retrieval(RetrievalInterface):
     Example:
     --------
     # Get corpus from vector store
-    corpus, doc_ids = vector_store.get_all_documents()
+    corpus, doc_ids = vectorstore.get_all_documents()
 
     # Get metadata for filtering (optional but recommended)
     metadata = [{'domain': 'hr', 'doc_type': 'policy'}, ...]
@@ -463,7 +463,7 @@ class BM25Retrieval(RetrievalInterface):
         Example:
         --------
         # Get updated corpus from vector store
-        corpus, doc_ids = vector_store.get_all_documents()
+        corpus, doc_ids = vectorstore.get_all_documents()
 
         # Rebuild BM25 index
         bm25.update_corpus(corpus, doc_ids)

@@ -103,7 +103,7 @@ def create_domain(domain_name: str, description: str, template: str) -> tuple:
                     "persist_directory": f".data/chromadb/{domain_name}"
                 },
                 "embeddings": {
-                    "provider": "sentencetransformers",
+                    "provider": "sentence_transformers",
                     "model_name": "all-MiniLM-L6-v2",
                     "device": "cpu"
                 },
@@ -230,7 +230,7 @@ def save_parameter_template(template_name: str, chunk_size: int, overlap: int,
                 }
             },
             "embeddings": {
-                "provider": "sentencetransformers",
+                "provider": "sentence_transformers",
                 "model_name": embedding_model,
                 "device": "cpu"
             },
@@ -423,7 +423,7 @@ with gr.Blocks(title="Multi-Domain RAG System", theme=gr.themes.Soft()) as demo:
         gr.Markdown("### Retrieval Parameters")
         with gr.Row():
             param_strategy = gr.Dropdown(
-                choices=["hybrid", "vectorsimilarity", "bm25"],
+                choices=["hybrid", "vector_similarity", "bm25"],
                 label="Retrieval Strategy",
                 value="hybrid"
             )

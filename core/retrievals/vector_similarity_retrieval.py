@@ -18,17 +18,17 @@ class VectorSimilarityRetrieval(RetrievalInterface):
     Uses vector store (Chroma/Pinecone) for semantic similarity search.
     """
 
-    def __init__(self, vector_store):
+    def __init__(self, vectorstore):
         """
         Initialize vector similarity retrieval.
 
         Parameters:
         -----------
-        vector_store : VectorStoreInterface
+        vectorstore : VectorStoreInterface
             The vector store instance (ChromaDB or Pinecone)
         """
-        self.vector_store = vector_store
-        logger.info(f"Initialized VectorSimilarityRetrieval with {type(vector_store).__name__}")
+        self.vectorstore = vectorstore
+        logger.info(f"Initialized VectorSimilarityRetrieval with {type(vectorstore).__name__}")
 
     def retrieve(
             self,
@@ -62,7 +62,7 @@ class VectorSimilarityRetrieval(RetrievalInterface):
         logger.debug(f"Vector search: '{query_text}' (top_k={top_k})")
 
         # Query vector store
-        results = self.vector_store.query(
+        results = self.vectorstore.query(
             query_texts=[query_text],
             n_results=top_k,
             where=metadata_filters

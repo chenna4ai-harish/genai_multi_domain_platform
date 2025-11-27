@@ -47,7 +47,7 @@ def load_config_fields(filename):
         cfg.get("vectorstore",{}).get("persist_directory"), cfg.get("chunking",{}).get("strategy"),
         chunking_recursive.get("chunk_size",500), chunking_recursive.get("overlap",50),
         chunking_semantic.get("similarity_threshold",0.7), chunking_semantic.get("max_chunk_size",1000),
-        cfg.get("embeddings",{}).get("provider","sentencetransformers"),
+        cfg.get("embeddings",{}).get("provider","sentence_transformers"),
         cfg.get("embeddings",{}).get("model_name","all-MiniLM-L6-v2"),
         cfg.get("embeddings",{}).get("device","cpu"),
         cfg.get("embeddings",{}).get("batch_size",32),
@@ -113,8 +113,8 @@ with gr.Blocks(title="Playground: Wizard UI") as playground:
             similarity_threshold = gr.Slider(0.0, 1.0, value=0.7, label="Similarity Threshold", visible=False)
             max_chunk_size = gr.Slider(500, 3000, value=1000, label="Max Chunk Size", visible=False)
         with gr.Row():
-            embedding_provider = gr.Dropdown(list(ComponentRegistry.get_embedding_providers().keys()), label="Embedding Provider", value="sentencetransformers")
-            embedding_model = gr.Dropdown(ComponentRegistry.get_embedding_providers()["sentencetransformers"], label="Embedding Model")
+            embedding_provider = gr.Dropdown(list(ComponentRegistry.get_embedding_providers().keys()), label="Embedding Provider", value="sentence_transformers")
+            embedding_model = gr.Dropdown(ComponentRegistry.get_embedding_providers()["sentence_transformers"], label="Embedding Model")
             device = gr.Dropdown(ComponentRegistry.get_device_options(), label="Device", value="cpu")
             batch_size = gr.Slider(8, 128, value=32, label="Batch Size")
         with gr.Row():

@@ -585,25 +585,25 @@ class VectorStoreInterface(ABC):
         Use Cases:
         ----------
         1. **Building BM25 Index for Hybrid Retrieval**:
-           corpus, doc_ids = vector_store.get_all_documents()
+           corpus, doc_ids = vectorstore.get_all_documents()
            bm25_index = BM25Retrieval(corpus=corpus, doc_ids=doc_ids)
 
            # Now use hybrid retrieval
            hybrid_retriever = HybridRetrieval(
-               vector_store=vector_store,
+               vectorstore=vectorstore,
                embedding_model=embedder,
                bm25_index=bm25_index,
                alpha=0.7  # 70% dense, 30% sparse
            )
 
         2. **Analytics and Monitoring**:
-           corpus, _ = vector_store.get_all_documents()
+           corpus, _ = vectorstore.get_all_documents()
            total_chunks = len(corpus)
            avg_length = sum(len(text) for text in corpus) / total_chunks
            print(f"Total chunks: {total_chunks}, Avg length: {avg_length}")
 
         3. **Data Export/Backup**:
-           corpus, doc_ids = vector_store.get_all_documents()
+           corpus, doc_ids = vectorstore.get_all_documents()
            # Export to file for backup or analysis
 
         Implementation Guidelines:
@@ -677,11 +677,11 @@ class VectorStoreInterface(ABC):
         Example Usage:
         --------------
         # Initialize hybrid retrieval for Phase 2
-        vector_store = VectorStoreFactory.create_store(config, embedding_dim, metadata_fields)
+        vectorstore = VectorStoreFactory.create_store(config, embedding_dim, metadata_fields)
         embedder = EmbeddingFactory.create_embedder(embedding_config)
 
         # Build BM25 index from vector store corpus
-        corpus, doc_ids = vector_store.get_all_documents()
+        corpus, doc_ids = vectorstore.get_all_documents()
         print(f"Corpus size: {len(corpus)} chunks")
 
         # Create BM25 index
@@ -689,7 +689,7 @@ class VectorStoreInterface(ABC):
 
         # Create hybrid retriever (combines vector + BM25)
         hybrid_retriever = HybridRetrieval(
-            vector_store=vector_store,
+            vectorstore=vectorstore,
             embedding_model=embedder,
             bm25_index=bm25_index,
             alpha=0.7
@@ -719,7 +719,7 @@ How to Implement a New Vector Store Provider:
 1. Create a new file: core/vectorstores/my_store.py
 
 2. Import the interface:
-   from core.interfaces.vector_store_interface import VectorStoreInterface
+   from core.interfaces.vectorstore_interface import VectorStoreInterface
    from models.metadata_models import ChunkMetadata
    import numpy as np
 
@@ -747,7 +747,7 @@ How to Implement a New Vector Store Provider:
            # Your corpus retrieval implementation (for BM25)
            pass
 
-4. Register in factory: core/factories/vector_store_factory.py
+4. Register in factory: core/factories/vectorstore_factory.py
 
    elif config.provider == "my_store":
        return MyVectorStore(
@@ -766,7 +766,7 @@ How to Implement a New Vector Store Provider:
        my_store: Optional[MyStoreConfig] = None
 
 6. Use in YAML:
-   vector_store:
+   vectorstore:
      provider: "my_store"
      my_store:
        connection_string: "http://localhost:8000"

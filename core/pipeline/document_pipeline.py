@@ -91,7 +91,7 @@ from datetime import datetime
 # Import factories (ONLY factories, never concrete implementations!)
 from core.factories.chunking_factory import ChunkingFactory
 from core.factories.embedding_factory import EmbeddingFactory
-from core.factories.vector_store_factory import VectorStoreFactory
+from core.factories.vectorstore_factory import VectorStoreFactory
 from core.factories.retrieval_factory import RetrievalFactory
 
 # Import interfaces and models
@@ -137,7 +137,7 @@ class DocumentPipeline:
             Must contain:
             - embeddings: Embedding provider config
             - chunking: Chunking strategy config
-            - vector_store: Vector store config
+            - vectorstore: Vector store config
             - retrieval: Retrieval strategies config (optional)
 
         Raises:
@@ -197,13 +197,13 @@ class DocumentPipeline:
 
         # Step 4: Create vector store (needs dimension and metadata schema)
         logger.debug("Creating vector store via VectorStoreFactory...")
-        self.vector_store: VectorStoreInterface = VectorStoreFactory.create_store(
-            config=self.config.vector_store,
+        self.vectorstore: VectorStoreInterface = VectorStoreFactory.create_store(
+            config=self.config.vectorstore,
             embedding_dimension=embedding_dimension,
             metadata_fields=self.metadata_fields
         )
 
-        logger.info(f"✅ Vector store created: {self.config.vector_store.provider}")
+        logger.info(f"✅ Vector store created: {self.config.vectorstore.provider}")
 
         # Step 5: Create retrieval strategies
         logger.debug("Creating retrieval strategies via RetrievalFactory...")
@@ -256,7 +256,7 @@ class DocumentPipeline:
                 # Create retriever via factory
                 retriever = RetrievalFactory.create_retriever(
                     config=strategy_config,
-                    vector_store=self.vector_store,
+                    vectorstore=self.vectorstore,
                     embedding_model=self.embedding_model,
                     bm25_index=bm25_index
                 )
@@ -366,7 +366,7 @@ class DocumentPipeline:
         if replace_existing:
             logger.info(f"Deleting existing chunks for doc_id: {doc_id}")
             try:
-                self.vector_store.delete_by_doc_id(doc_id)
+                self.vectorstore.delete_by_doc_id(doc_id)
                 logger.info(f"✅ Deleted existing chunks for doc_id: {doc_id}")
             except Exception as e:
                 logger.warning(f"No existing chunks to delete: {e}")
@@ -408,7 +408,7 @@ class DocumentPipeline:
 
         # Step 6: Upsert to vector store
         logger.info(f"Upserting {len(chunks)} chunks to vector store...")
-        self.vector_store.upsert(chunks=chunks, embeddings=embeddings)
+        self.vectorstore.upsert(chunks=chunks, embeddings=embeddings)
 
         logger.info(f"✅ Successfully upserted {len(chunks)} chunks for doc_id: {doc_id}")
 
@@ -572,7 +572,7 @@ class DocumentPipeline:
         pipeline.delete_document("old_handbook_2023")
         """
         logger.info(f"Deleting document: {doc_id}")
-        self.vector_store.delete_by_doc_id(doc_id)
+        self.vectorstore.delete_by_doc_id(doc_id)
         logger.info(f"✅ Deleted all chunks for doc_id: {doc_id}")
 
     def get_document_info(self, doc_id: str) -> Dict[str, Any]:
@@ -646,12 +646,12 @@ class DocumentPipeline:
         )
 
         # 1) If vector store has a native list_documents(), just use it
-        if hasattr(self.vector_store, "list_documents"):
-            logger.debug("Using vector_store.list_documents()")
-            return self.vector_store.list_documents(filters=filters)
+        if hasattr(self.vectorstore, "list_documents"):
+            logger.debug("Using vectorstore.list_documents()")
+            return self.vectorstore.list_documents(filters=filters)
 
         # 2) Generic fallback: scan all metadata from the underlying collection
-        collection = getattr(self.vector_store, "collection", None)
+        collection = getattr(self.vectorstore, "collection", None)
         if collection is None:
             raise NotImplementedError(
                 "Vector store does not support list_documents and has no 'collection' handle."
@@ -763,14 +763,14 @@ class DocumentPipeline:
         )
 
         # 1) If vector store has a native list_chunks(), use that
-        if hasattr(self.vector_store, "list_chunks"):
-            logger.debug("Using vector_store.list_chunks()")
-            return self.vector_store.list_chunks(
+        if hasattr(self.vectorstore, "list_chunks"):
+            logger.debug("Using vectorstore.list_chunks()")
+            return self.vectorstore.list_chunks(
                 doc_id=doc_id, limit=limit, offset=offset
             )
 
         # 2) Generic fallback: query underlying collection by metadata
-        collection = getattr(self.vector_store, "collection", None)
+        collection = getattr(self.vectorstore, "collection", None)
         if collection is None:
             raise NotImplementedError(
                 "Vector store does not support list_chunks and has no 'collection' handle."

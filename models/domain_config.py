@@ -347,7 +347,7 @@ class DomainConfig(BaseModel):
 
     **CRITICAL**: Field names MUST match what code expects:
     - embeddings (not embedding)
-    - vector_store (not vectorstore)
+    - vectorstore (not vectorstore)
     - chunking
     - retrieval
 
@@ -368,7 +368,7 @@ class DomainConfig(BaseModel):
       model_name: "all-MiniLM-L6-v2"
       normalize: true
 
-    vector_store:
+    vectorstore:
       provider: "chromadb"
       collection_name: "hr_collection"
       persist_directory: "./data/chroma_db"
@@ -391,7 +391,7 @@ class DomainConfig(BaseModel):
     # Component configurations (MUST match code field names!)
     chunking: ChunkingConfig = Field(..., description="Chunking configuration")
     embeddings: EmbeddingConfig = Field(..., description="Embedding configuration")
-    vector_store: VectorStoreConfig = Field(..., description="Vector store configuration")
+    vectorstore: VectorStoreConfig = Field(..., description="Vector store configuration")
     retrieval: RetrievalConfig = Field(..., description="Retrieval configuration")
 
     # Optional configurations
@@ -433,7 +433,7 @@ if __name__ == "__main__":
             device="cpu",
             normalize=True
         ),
-        vector_store=VectorStoreConfig(
+        vectorstore=VectorStoreConfig(
             provider="chromadb",
             collection_name="hr_collection",
             persist_directory="./data/chroma_db"
@@ -452,7 +452,7 @@ if __name__ == "__main__":
     print(f"✅ Valid config for domain: {hr_config.domain_id}")
     print(f"   Chunking: {hr_config.chunking.strategy}")
     print(f"   Embeddings: {hr_config.embeddings.provider}")
-    print(f"   Vector Store: {hr_config.vector_store.provider}")
+    print(f"   Vector Store: {hr_config.vectorstore.provider}")
     print(f"   Retrieval: {', '.join(hr_config.retrieval.strategies)}")
 
     # Example 2: Finance domain (Pinecone + Gemini)
@@ -471,7 +471,7 @@ if __name__ == "__main__":
             provider="gemini",
             model_name="models/embedding-001"
         ),
-        vector_store=VectorStoreConfig(
+        vectorstore=VectorStoreConfig(
             provider="pinecone",
             collection_name="finance-docs-prod",
             cloud="aws",

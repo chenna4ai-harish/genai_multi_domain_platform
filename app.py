@@ -73,8 +73,8 @@ class AppState:
             try:
                 pipe = self.get_pipeline(dom)
                 # Get documents from vector store
-                if hasattr(pipe.vector_store, 'list_documents'):
-                    self.doc_registry[dom] = pipe.vector_store.list_documents()
+                if hasattr(pipe.vectorstore, 'list_documents'):
+                    self.doc_registry[dom] = pipe.vectorstore.list_documents()
                 else:
                     # Fallback: empty list
                     self.doc_registry[dom] = []
@@ -124,7 +124,7 @@ def on_domain_select(domain_id):
 **Configuration:**
 - **Embedding Provider:** {conf.embeddings.provider}
 - **Embedding Model:** {conf.embeddings.model_name}
-- **Vector Store:** {conf.vector_store.provider}
+- **Vector Store:** {conf.vectorstore.provider}
 - **Chunking Strategy:** {conf.chunking.strategy}
 - **Chunk Size:** {conf.chunking.recursive.chunk_size if conf.chunking.strategy == 'recursive' else 'N/A'}
 - **Retrieval Strategy:** {conf.retrieval.strategy}
@@ -177,7 +177,7 @@ def on_document_upload(domain_id, file, uploader_id):
             ["Processing Time", f"{result.get('processing_time', 0):.2f}s"],
             ["Embedding Model", result.get('embedding_model', 'N/A')],
             ["Chunking Strategy", result.get('chunking_strategy', 'N/A')],
-            ["Vector Store", result.get('vector_store', 'N/A')],
+            ["Vector Store", result.get('vectorstore', 'N/A')],
             ["File Size", f"{result.get('file_size', 0) / 1024:.1f} KB"],
             ["Status", "✅ Success"]
         ]
@@ -213,7 +213,7 @@ def on_query(domain_id, query, top_k):
         query_embedding = pipeline.embedder.embed_texts([query])[0]
 
         # STEP 2: Search vector store directly (pipeline has no search method)
-        results = pipeline.vector_store.search(
+        results = pipeline.vectorstore.search(
             query_embedding=query_embedding,
             top_k=int(top_k),
             filters=None  # Optional: add domain filter
@@ -253,7 +253,7 @@ def on_create_domain(domain_id, display_name, desc):
             "display_name": display_name or domain_id,
             "description": desc or f"Domain for {domain_id}",
             "embeddings": {
-                "provider": "SentenceTransformers",
+                "provider": "sentence_transformers",
                 "model_name": "all-MiniLM-L6-v2",
                 "device": "cpu",
                 "batch_size": 32,
@@ -266,7 +266,7 @@ def on_create_domain(domain_id, display_name, desc):
                     "overlap": 50
                 }
             },
-            "vector_store": {
+            "vectorstore": {
                 "provider": "ChromaDB",
                 "chromadb": {
                     "persist_directory": ".data/chromadb",
@@ -343,8 +343,8 @@ def on_delete_document(domain_id, doc_id, confirm):
         # Delete from vector store
         if hasattr(pipeline, 'delete_document'):
             pipeline.delete_document(doc_id)
-        elif hasattr(pipeline.vector_store, 'delete_by_doc_id'):
-            pipeline.vector_store.delete_by_doc_id(doc_id)
+        elif hasattr(pipeline.vectorstore, 'delete_by_doc_id'):
+            pipeline.vectorstore.delete_by_doc_id(doc_id)
 
         app_state.remove_document_record(domain_id, doc_id)
 
@@ -366,7 +366,7 @@ def on_chunk_docs_domain_select(domain_id):
         logger.info(f"Fetching documents for chunk viewer in domain: {domain_id}")
 
         pipeline = app_state.get_pipeline(domain_id)
-        collection = pipeline.vector_store.collection
+        collection = pipeline.vectorstore.collection
 
         # Get all items from the collection
         all_results = collection.get(include=["metadatas"])
@@ -402,7 +402,7 @@ def on_chunk_docs_select(domain_id, doc_id):
         logger.info(f"Fetching chunks for doc_id: '{doc_id}' in domain: '{domain_id}'")
 
         pipeline = app_state.get_pipeline(domain_id)
-        collection = pipeline.vector_store.collection
+        collection = pipeline.vectorstore.collection
 
         # Get all chunks with matching doc_id using metadata filter
         results = collection.get(

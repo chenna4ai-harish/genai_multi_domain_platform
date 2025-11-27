@@ -149,11 +149,11 @@ class RetrievalInterface(ABC):
         return results
 
     # Works with vector similarity
-    vector_retriever = VectorSimilarityRetrieval(vector_store, embedder)
+    vector_retriever = VectorSimilarityRetrieval(vectorstore, embedder)
     search_documents("vacation policy", vector_retriever)
 
     # Works with hybrid (same calling code!)
-    hybrid_retriever = HybridRetrieval(vector_store, embedder, bm25_index)
+    hybrid_retriever = HybridRetrieval(vectorstore, embedder, bm25_index)
     search_documents("vacation policy", hybrid_retriever)
     """
 
@@ -294,13 +294,13 @@ class RetrievalInterface(ABC):
 
         3. **Execute Search**:
            # Vector: Query vector store
-           results = self.vector_store.search(query_embedding, top_k, filters)
+           results = self.vectorstore.search(query_embedding, top_k, filters)
 
            # BM25: Query BM25 index
            results = self.bm25_index.search(query_terms, top_k)
 
            # Hybrid: Query both and merge
-           dense_results = self.vector_store.search(...)
+           dense_results = self.vectorstore.search(...)
            sparse_results = self.bm25_index.search(...)
            results = self.merge_results(dense_results, sparse_results, alpha)
 
@@ -337,7 +337,7 @@ class RetrievalInterface(ABC):
             query_embedding = self.embedder.embed_texts([query_text])[0]
 
             # 3. Execute search
-            results = self.vector_store.search(
+            results = self.vectorstore.search(
                 query_embedding=query_embedding,
                 top_k=top_k,
                 filters=metadata_filters
@@ -397,9 +397,9 @@ How to Implement a New Retrieval Strategy:
 3. Create your class inheriting from RetrievalInterface:
 
    class MyRetrieval(RetrievalInterface):
-       def __init__(self, vector_store, embedder, **kwargs):
+       def __init__(self, vectorstore, embedder, **kwargs):
            # Initialize your retrieval strategy
-           self.vector_store = vector_store
+           self.vectorstore = vectorstore
            self.embedder = embedder
 
        def retrieve(self, query_text, metadata_filters=None, top_k=10):
@@ -409,7 +409,7 @@ How to Implement a New Retrieval Strategy:
            query_embedding = self.embedder.embed_texts([query_text])[0]
 
            # 2. Execute search
-           results = self.vector_store.search(
+           results = self.vectorstore.search(
                query_embedding,
                top_k,
                metadata_filters
@@ -422,7 +422,7 @@ How to Implement a New Retrieval Strategy:
 
    elif config.strategy == "my_retrieval":
        return MyRetrieval(
-           vector_store=vector_store,
+           vectorstore=vectorstore,
            embedder=embedding_model
        )
 
@@ -451,7 +451,7 @@ Common Retrieval Patterns:
 Pattern 1: Pure Vector Search
 ------------------------------
 query_emb = embedder.embed_texts([query_text])[0]
-results = vector_store.search(query_emb, top_k, filters)
+results = vectorstore.search(query_emb, top_k, filters)
 return results
 
 Pattern 2: Pure BM25 Search
@@ -465,7 +465,7 @@ Pattern 3: Hybrid (Alpha Weighted)
 -----------------------------------
 # Get both types of results
 query_emb = embedder.embed_texts([query_text])[0]
-dense_results = vector_store.search(query_emb, top_k * 2, filters)
+dense_results = vectorstore.search(query_emb, top_k * 2, filters)
 sparse_results = bm25_index.search(tokenize(query_text), top_k * 2)
 
 # Merge with alpha weighting

@@ -205,7 +205,7 @@ class DomainConfig(BaseModel):
     chunking: ChunkingConfig = Field(..., description="Chunking configuration")
     embeddings: EmbeddingConfig = Field(..., description="Embedding configuration")
     retrieval: RetrievalConfig = Field(..., description="Retrieval configuration")
-    vector_store: VectorStoreConfig = Field(..., description="Vector store configuration")
+    vectorstore: VectorStoreConfig = Field(..., description="Vector store configuration")
 
     # Optional configurations
     security: Optional[SecurityConfig] = Field(default_factory=SecurityConfig)
@@ -258,7 +258,7 @@ class ConfigManager:
     # Access configuration values
     print(f"Chunking strategy: {hr_config.chunking.strategy}")
     print(f"Embedding provider: {hr_config.embeddings.provider}")
-    print(f"Vector store: {hr_config.vector_store.provider}")
+    print(f"Vector store: {hr_config.vectorstore.provider}")
     """
 
     def __init__(
@@ -456,7 +456,7 @@ class ConfigManager:
                 f"✅ Domain config loaded and validated: {domain_name}\n"
                 f"   Chunking: {config.chunking.strategy}\n"
                 f"   Embeddings: {config.embeddings.provider}\n"
-                f"   Vector Store: {config.vector_store.provider}\n"
+                f"   Vector Store: {config.vectorstore.provider}\n"
                 f"   Retrieval: {', '.join(config.retrieval.strategies)}"
             )
             return config
@@ -592,7 +592,7 @@ if __name__ == "__main__":
             print(f"Name: {config.name}")
             print(f"Chunking strategy: {config.chunking.strategy}")
             print(f"Embedding provider: {config.embeddings.provider}")
-            print(f"Vector store: {config.vector_store.provider}")
+            print(f"Vector store: {config.vectorstore.provider}")
             print(f"Retrieval strategies: {config.retrieval.strategies}")
 
         except FileNotFoundError as e:
@@ -621,8 +621,8 @@ provider = hr_config.embeddings.provider
 model_name = hr_config.embeddings.model_name
 
 # Vector store configuration
-vector_store_provider = hr_config.vector_store.provider
-collection_name = hr_config.vector_store.collection_name
+vectorstore_provider = hr_config.vectorstore.provider
+collection_name = hr_config.vectorstore.collection_name
 
 # Security configuration
 allowed_types = hr_config.security.allowed_file_types

@@ -97,7 +97,7 @@ from core.retrievals.hybrid_retrieval import HybridRetrieval
 
 # Initialize hybrid retriever
 hybrid = HybridRetrieval(
-    vector_store=vector_store,
+    vectorstore=vectorstore,
     embedding_model=embedder,
     bm25_index=bm25_retrieval,
     alpha=0.7,  # 70% semantic, 30% keywords
@@ -186,7 +186,7 @@ class HybridRetrieval(RetrievalInterface):
 
     Parameters:
     -----------
-    vector_store : VectorStoreInterface
+    vectorstore : VectorStoreInterface
         Vector store for dense search
     embedding_model : EmbeddingInterface
         Embedding model for query encoding
@@ -202,14 +202,14 @@ class HybridRetrieval(RetrievalInterface):
     Example:
     --------
     # Get corpus for BM25
-    corpus, doc_ids = vector_store.get_all_documents()
+    corpus, doc_ids = vectorstore.get_all_documents()
 
     # Create BM25 index
     bm25 = BM25Retrieval(corpus=corpus, doc_ids=doc_ids)
 
     # Create hybrid retriever
     hybrid = HybridRetrieval(
-        vector_store=vector_store,
+        vectorstore=vectorstore,
         embedding_model=embedder,
         bm25_index=bm25,
         alpha=0.7,
@@ -230,7 +230,7 @@ class HybridRetrieval(RetrievalInterface):
 
     def __init__(
             self,
-            vector_store: VectorStoreInterface,
+            vectorstore: VectorStoreInterface,
             embedding_model: EmbeddingInterface,
             bm25_index: BM25Retrieval,
             alpha: float = 0.7,
@@ -241,7 +241,7 @@ class HybridRetrieval(RetrievalInterface):
 
         Parameters:
         -----------
-        vector_store : VectorStoreInterface
+        vectorstore : VectorStoreInterface
             Vector store for dense search
         embedding_model : EmbeddingInterface
             Embedding model for query encoding
@@ -264,10 +264,10 @@ class HybridRetrieval(RetrievalInterface):
             raise ValueError(f"alpha must be between 0.0 and 1.0, got {alpha}")
 
         # Validate interfaces
-        if not isinstance(vector_store, VectorStoreInterface):
+        if not isinstance(vectorstore, VectorStoreInterface):
             raise TypeError(
-                f"vector_store must implement VectorStoreInterface, "
-                f"got {type(vector_store)}"
+                f"vectorstore must implement VectorStoreInterface, "
+                f"got {type(vectorstore)}"
             )
 
         if not isinstance(embedding_model, EmbeddingInterface):
@@ -282,7 +282,7 @@ class HybridRetrieval(RetrievalInterface):
                 f"got {type(bm25_index)}"
             )
 
-        self.vector_store = vector_store
+        self.vectorstore = vectorstore
         self.embedding_model = embedding_model
         self.bm25_index = bm25_index
         self.alpha = alpha
@@ -378,7 +378,7 @@ class HybridRetrieval(RetrievalInterface):
             # Search vector store
             # Retrieve more than top_k for better merging
             dense_top_k = top_k * 2
-            dense_results = self.vector_store.search(
+            dense_results = self.vectorstore.search(
                 query_embedding=query_embedding,
                 top_k=dense_top_k,
                 filters=metadata_filters
@@ -661,12 +661,12 @@ Integration:
 # Step 1: Get corpus for BM25 (from vector store)
 from core.vectorstores.chromadb_store import ChromaDBStore
 
-vector_store = ChromaDBStore(
+vectorstore = ChromaDBStore(
     persist_directory="./data/chroma_db",
     collection_name="hr_collection"
 )
 
-corpus, doc_ids = vector_store.get_all_documents()
+corpus, doc_ids = vectorstore.get_all_documents()
 
 # Step 2: Create BM25 index
 from core.retrievals.bm25_retrieval import BM25Retrieval
@@ -684,7 +684,7 @@ embedder = SentenceTransformerEmbeddings(
 from core.retrievals.hybrid_retrieval import HybridRetrieval
 
 hybrid = HybridRetrieval(
-    vector_store=vector_store,
+    vectorstore=vectorstore,
     embedding_model=embedder,
     bm25_index=bm25,
     alpha=0.7,  # 70% semantic, 30% keywords

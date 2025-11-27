@@ -4,20 +4,27 @@ from typing import List, Dict, Any
 from pathlib import Path
 from datetime import datetime
 import yaml
+import copy
+import logging
 
+logger = logging.getLogger(__name__)
+
+# ONLY import PlaygroundConfigManager for playground UI
+from core.playground_config_manager import PlaygroundConfigManager
 from core.registry.component_registry import ComponentRegistry
 
-# ====================================================================
-# Playground config helpers
-# ====================================================================
+
+# ============================================================================
+# Backend Functions - ALL use PlaygroundConfigManager
+# ============================================================================
 
 def load_config_list() -> List[str]:
-    from core.playground_config_manager import PlaygroundConfigManager
+    """Return list of available playground configs."""
     return [c["name"] for c in PlaygroundConfigManager.list_configs()]
 
 
 def load_config(config_name: str) -> Dict[str, Any]:
-    from core.playground_config_manager import PlaygroundConfigManager
+    """Load playground config by name."""
     all_configs = PlaygroundConfigManager.list_configs()
     match = next((c for c in all_configs if c["name"] == config_name), None)
     if not match:
@@ -26,33 +33,14 @@ def load_config(config_name: str) -> Dict[str, Any]:
 
 
 def save_config(
-    config_name,
-    config_desc,
-    vectorstore,
-    distance_metric,
-    collection_name,
-    persist_dir,
-    chunking_strategy,
-    chunk_size,
-    overlap,
-    similarity_threshold,
-    max_chunk_size,
-    embedding_provider,
-    embedding_model,
-    device,
-    batch_size,
-    retrieval_strategies,
-    top_k,
-    hybrid_alpha,
-    llm_provider,
-    llm_model,
-    temperature,
-    max_tokens,
-    session_id,  # not used for filename now
+        config_name, config_desc, vectorstore, distance_metric, collection_name,
+        persist_dir, chunking_strategy, chunk_size, overlap, similarity_threshold,
+        max_chunk_size, embedding_provider, embedding_model, device, batch_size,
+        retrieval_strategies, top_k, hybrid_alpha, llm_provider, llm_model,
+        temperature, max_tokens, session_id
 ):
-    from core.playground_config_manager import PlaygroundConfigManager
-
-    today_tag = datetime.now().strftime("%d%m%Y")   # e.g. 25032025
+    """Save playground config."""
+    today_tag = datetime.now().strftime("%d%m%Y")
     full_name = f"{config_name}_{today_tag}" if config_name else today_tag
 
     config = {
@@ -93,90 +81,106 @@ def save_config(
     }
 
     PlaygroundConfigManager.save_config(full_name, today_tag, config)
-    return f"✅ Config **{full_name}** saved on `{today_tag}`."
+    return f"✅ Config **{full_name}** saved on {today_tag}."
 
 
 def save_as_template(template_name: str, config_name: str, session_id: str):
-    from core.playground_config_manager import PlaygroundConfigManager
-
+    """Save playground config as template."""
     if not template_name:
         return "⚠️ Please enter a template name."
 
     all_configs = PlaygroundConfigManager.list_configs()
     match = next(
-        (
-            c for c in all_configs
-            if c.get("name") == config_name
-            or c.get("playground_name") == config_name
-            or c.get("filename") == config_name
-        ),
-        None,
+        (c for c in all_configs
+         if c.get("name") == config_name
+         or c.get("playground_name") == config_name
+         or c.get("filename") == config_name),
+        None
     )
+
     if not match:
-        return f"⚠️ No config named **{config_name}** found to save as template."
+        return f"❌ No config named '{config_name}' found to save as template."
 
     cfg = PlaygroundConfigManager.load_config(match["filename"])
     path = Path("configs/templates") / f"{template_name}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
+
     with open(path, "w") as f:
         yaml.dump(cfg, f)
 
     return f"⭐ Template **{template_name}** created from config **{config_name}**."
 
 
-# Simple demo pipeline runner (Phase-1 style)
-def run_pipeline(
-    user_query: str,
-    config_name: str,
-    session_id: str,
-):
-    if not user_query.strip():
-        return "⚠️ Please enter a question to run.", [], "No query provided."
+# ============================================================================
+# Service Factory - Works with Playground Configs ONLY
+# ============================================================================
 
-    answer = (
-        f"Demo answer for: **{user_query}**\n\n"
-        f"_Using config_ `{config_name or 'Current (unsaved) config'}` "
-        f"_session_ `{session_id}`."
-    )
-
-    demo_chunks = [
-        {"doc_id": 1, "score": 0.87, "snippet": "Chunk 1 text snippet..."},
-        {"doc_id": 2, "score": 0.82, "snippet": "Chunk 2 text snippet..."},
-    ]
-    logs = (
-        "Demo pipeline executed.\nSteps:\n"
-        "1) Embed query\n2) Retrieve chunks\n3) Generate answer"
-    )
-
-    return answer, demo_chunks, logs
-
-
-# ====================================================================
-# DocumentService wiring (for upload + corpus + chunks)
-# ====================================================================
-
-service_cache: Dict[str, "DocumentService"] = {}
+service_cache: Dict[str, Any] = {}
 
 
 def get_service_for_config(config_name: str):
     """
-    Map Playground config/domain to a DocumentService.
-
-    TODO: adapt mapping to your real domain/config relationship.
-    Currently assuming `DocumentService(domain_id=config_name)`.
+    Create DocumentService from playground config.
+    Only works with configs/playground/, NOT configs/domains/.
     """
     if not config_name:
-        raise ValueError("Please select a config/domain first")
+        raise ValueError("Please select a config first")
 
     if config_name in service_cache:
         return service_cache[config_name]
 
     from core.services.document_service import DocumentService
-    service = DocumentService(domain_id=config_name)
-    service_cache[config_name] = service
-    return service
 
+    # Find playground config
+    pg_filename = PlaygroundConfigManager.find_config_by_name(config_name)
+    if not pg_filename:
+        raise FileNotFoundError(
+            f"Playground config '{config_name}' not found. "
+            f"Available: {[c['name'] for c in PlaygroundConfigManager.list_configs()]}"
+        )
 
+    # Load playground config
+    pg_cfg = PlaygroundConfigManager.load_config(pg_filename)
+
+    # Merge with global defaults
+    pg_mgr = PlaygroundConfigManager()
+    merged_cfg = pg_mgr.merge_with_global(pg_cfg)
+
+    # Create synthetic domain ID for playground
+    synth_domain_id = pg_cfg.get("playground_name") or config_name
+    merged_cfg.setdefault("domain_id", synth_domain_id)
+    merged_cfg.setdefault("name", synth_domain_id)
+
+    # Validate as DomainConfig
+    try:
+        from core.config_manager import DomainConfig
+        domain_config = DomainConfig(**merged_cfg)
+    except Exception as e:
+        logger.exception("Failed to validate playground config as DomainConfig")
+        raise ValueError(f"Playground config '{config_name}' invalid: {e}")
+
+    # Try to create service with DomainConfig
+    try:
+        service = DocumentService(domain_config=domain_config)
+        service_cache[config_name] = service
+        logger.info(f"DocumentService created from playground config '{config_name}'")
+        return service
+    except TypeError:
+        # Fallback: write temp domain YAML
+        logger.debug("DocumentService doesn't accept domain_config, writing temp domain file")
+        temp_name = f"{synth_domain_id}_playground_temp"
+        temp_domain_file = Path("configs/domains") / f"{temp_name}.yaml"
+
+        if not temp_domain_file.exists():
+            domain_dict = domain_config.model_dump() if hasattr(domain_config, 'model_dump') else domain_config.dict()
+            with open(temp_domain_file, "w") as f:
+                yaml.safe_dump(domain_dict, f)
+            logger.info(f"Wrote temp domain file: {temp_domain_file}")
+
+        service = DocumentService(domain_id=temp_name)
+        service_cache[config_name] = service
+        logger.info(f"DocumentService created from temp domain '{temp_name}'")
+        return service
 # ====================================================================
 # UI / Playground Layout
 # ====================================================================
@@ -278,7 +282,7 @@ def build_playground() -> gr.Blocks:
                     )
                     persist_dir = gr.Textbox(
                         label="Persist directory",
-                        placeholder="./vector_store",
+                        placeholder="./vectorstore",
                     )
 
                 # ---- Tab 2: Chunking ----
