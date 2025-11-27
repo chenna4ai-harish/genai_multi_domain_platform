@@ -71,6 +71,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field, ValidationError, field_validator
+from dotenv import dotenv_values
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -319,25 +320,38 @@ class ConfigManager:
             logger.error(f"Failed to load YAML from {path}: {e}")
             raise
 
+    from dotenv import dotenv_values
+
     def _inject_env_vars(self, config: Dict) -> None:
         """
         Recursively inject environment variables.
 
         Replaces ${ENV_VAR} syntax with actual environment variable values.
-        Example: api_key: ${GEMINI_API_KEY} → api_key: "actual-key-value"
+        If not found in os.environ, falls back to .env file.
         """
         if isinstance(config, dict):
             for k, v in config.items():
                 if isinstance(v, str) and v.startswith("${") and v.endswith("}"):
                     env_var = v[2:-1]  # Extract ENV_VAR from ${ENV_VAR}
+
+                    # 1) Try system environment first
                     env_value = os.getenv(env_var)
+
+                    # 2) If not found → fallback to .env file
+                    if not env_value:
+                        env_file = dotenv_values(".env")
+                        env_value = env_file.get(env_var)
+
+                    # Apply value if found
                     if env_value:
                         config[k] = env_value
                         logger.debug(f"Injected env var: {env_var}")
                     else:
                         logger.warning(f"Environment variable not set: {env_var}")
+
                 else:
                     self._inject_env_vars(v)
+
         elif isinstance(config, list):
             for entry in config:
                 self._inject_env_vars(entry)

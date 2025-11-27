@@ -35,7 +35,7 @@ retrieval:
   top_k: 10
 
 vectorstore:
-  provider: ChromaDB
+  provider: chromadb
   index_type: hnsw
   collection_name: default_collection
 

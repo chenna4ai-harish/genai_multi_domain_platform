@@ -51,7 +51,7 @@ This follows the Repository Pattern + Adapter Pattern:
 Example Usage:
 --------------
 # Factory creates the right vector store based on config
-store: VectorStoreInterface = VectorStoreFactory.create_store(config)
+store: VectorStoreInterface = VectorStoreFactory.create_vectorstore(config)
 
 # Caller doesn't care if it's ChromaDB or Pinecone!
 store.upsert(chunks, embeddings)
@@ -677,7 +677,7 @@ class VectorStoreInterface(ABC):
         Example Usage:
         --------------
         # Initialize hybrid retrieval for Phase 2
-        vectorstore = VectorStoreFactory.create_store(config, embedding_dim, metadata_fields)
+        vectorstore = VectorStoreFactory.create_vectorstore(config, embedding_dim, metadata_fields)
         embedder = EmbeddingFactory.create_embedder(embedding_config)
 
         # Build BM25 index from vector store corpus

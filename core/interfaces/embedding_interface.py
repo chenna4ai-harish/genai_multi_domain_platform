@@ -368,7 +368,7 @@ class EmbeddingInterface(ABC):
         dimension = embedder.get_embedding_dimension()  # 384
 
         # Use dimension to initialize vector store
-        vectorstore = VectorStoreFactory.create_store(
+        vectorstore = VectorStoreFactory.create_vectorstore(
             config=vectorstore_config,
             embedding_dimension=dimension,  # Pass dimension here!
             metadata_fields=["doc_id", "domain"]

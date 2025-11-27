@@ -267,7 +267,7 @@ def on_create_domain(domain_id, display_name, desc):
                 }
             },
             "vectorstore": {
-                "provider": "ChromaDB",
+                "provider": "chromadb",
                 "chromadb": {
                     "persist_directory": ".data/chromadb",
                     "collection_name": f"{domain_id}_collection"

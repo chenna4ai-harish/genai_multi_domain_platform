@@ -6,6 +6,7 @@ from datetime import datetime
 import yaml
 import copy
 import logging
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +46,11 @@ def save_config(
 
     config = {
         "name": full_name,
+        "domain_id": full_name,  # ← ADD THIS
         "description": config_desc,
-        "vectorstore": {
+        "vector_store": {  # ← CHANGED from "vectorstore"
             "provider": vectorstore,
-            "distance_metric": distance_metric,
+            "distance_metric": distance_metric,  # ← This might not be in schema, remove if needed
             "collection_name": collection_name,
             "persist_directory": persist_dir,
         },
@@ -66,11 +68,17 @@ def save_config(
             "model_name": embedding_model,
             "device": device,
             "batch_size": batch_size,
+            "normalize": True  # ← ADD THIS (required by schema)
         },
         "retrieval": {
             "strategies": retrieval_strategies,
             "top_k": top_k,
+            "similarity": "cosine",  # ← ADD THIS (required by schema)
             "hybrid": {"alpha": hybrid_alpha} if "Hybrid" in retrieval_strategies else {},
+        },
+        "security": {  # ← ADD THIS (required by schema)
+            "allowed_file_types": ["pdf", "docx", "txt"],
+            "max_file_size_mb": 50
         },
         "llm_rerank": {
             "provider": llm_provider,
@@ -572,8 +580,8 @@ def build_playground() -> gr.Blocks:
         # -----------------------------------------------------------------
         # Load config
         # -----------------------------------------------------------------
-
         def on_load_config(selected_name: str, session_id_value: str):
+            """Load playground config and populate UI fields."""
             if not selected_name:
                 return (
                     "⚠️ Please select a config to load.",
@@ -600,16 +608,33 @@ def build_playground() -> gr.Blocks:
             cfg = load_config(selected_name)
             status = f"📂 Loaded config **{selected_name}** for session `{session_id_value}`."
 
-            vectorstore_cfg = cfg.get("vectorstore", {}) or {}
-            chunking_cfg = cfg.get("chunking", {}) or {}
-            embeddings_cfg = cfg.get("embeddings", {}) or {}
-            retrieval_cfg = cfg.get("retrieval", {}) or {}
+            # Extract config sections - try both field names for compatibility
+            vectorstore_cfg = cfg.get("vector_store") or cfg.get("vectorstore") or {}
+            chunking_cfg = cfg.get("chunking") or {}
+            embeddings_cfg = cfg.get("embeddings") or {}
+            retrieval_cfg = cfg.get("retrieval") or {}
 
+            # === VECTOR STORE (FIX: Extract nested config) ===
             vs_provider_val = vectorstore_cfg.get("provider", default_vectorstore)
-            vs_distance_val = vectorstore_cfg.get("distance_metric", default_distance_metric)
-            vs_collection_val = vectorstore_cfg.get("collection_name", "")
-            vs_persist_val = vectorstore_cfg.get("persist_directory", "")
 
+            # CRITICAL FIX: Get provider-specific nested config
+            # Example: vectorstore.chromadb.collection_name
+            provider_config = vectorstore_cfg.get(vs_provider_val, {})
+
+            # Try nested first, then fallback to top-level (for compatibility)
+            vs_collection_val = (
+                    provider_config.get("collection_name") or
+                    vectorstore_cfg.get("collection_name") or
+                    ""
+            )
+            vs_persist_val = (
+                    provider_config.get("persist_directory") or
+                    vectorstore_cfg.get("persist_directory") or
+                    ".vectorstore"
+            )
+            vs_distance_val = vectorstore_cfg.get("distance_metric", default_distance_metric)
+
+            # === CHUNKING ===
             strategy_val = chunking_cfg.get("strategy", default_chunking_strategy)
             strategy_params = chunking_cfg.get(strategy_val, {}) or {}
             chunk_size_val = strategy_params.get("chunk_size", 500)
@@ -617,98 +642,65 @@ def build_playground() -> gr.Blocks:
             similarity_threshold_val = strategy_params.get("similarity_threshold", 0.7)
             max_chunk_size_val = strategy_params.get("max_chunk_size", 1000)
 
+            # === EMBEDDINGS ===
             emb_provider_val = embeddings_cfg.get("provider", default_provider)
             emb_model_val = embeddings_cfg.get("model_name", default_model)
             device_val = embeddings_cfg.get("device", default_device)
             batch_size_val = embeddings_cfg.get("batch_size", 32)
 
-            retrieval_strats_val = retrieval_cfg.get(
-                "strategies", default_retrieval_strategies
-            )
+            # === RETRIEVAL ===
+            retrieval_strats_val = retrieval_cfg.get("strategies", default_retrieval_strategies)
             top_k_val = retrieval_cfg.get("top_k", 10)
             hybrid_cfg = retrieval_cfg.get("hybrid", {}) or {}
             hybrid_alpha_val = hybrid_cfg.get("alpha", 0.5)
 
+            # Return all values in correct order matching the outputs
             return (
-                status,
+                status,  # config_status
                 cfg.get("name", selected_name),  # config_name
-                cfg.get("description", ""),      # config_desc
-                vs_provider_val,
-                vs_distance_val,
-                vs_collection_val,
-                vs_persist_val,
-                strategy_val,
-                chunk_size_val,
-                overlap_val,
-                similarity_threshold_val,
-                max_chunk_size_val,
-                emb_provider_val,
-                emb_model_val,
-                device_val,
-                batch_size_val,
-                retrieval_strats_val,
-                top_k_val,
-                hybrid_alpha_val,
+                cfg.get("description", ""),  # config_desc
+                vs_provider_val,  # vectorstore
+                vs_distance_val,  # distance_metric
+                vs_collection_val,  # collection_name ← NOW CORRECTLY EXTRACTED!
+                vs_persist_val,  # persist_dir ← NOW CORRECTLY EXTRACTED!
+                strategy_val,  # chunking_strategy
+                chunk_size_val,  # chunk_size
+                overlap_val,  # overlap
+                similarity_threshold_val,  # similarity_threshold
+                max_chunk_size_val,  # max_chunk_size
+                emb_provider_val,  # embedding_provider
+                emb_model_val,  # embedding_model
+                device_val,  # device
+                batch_size_val,  # batch_size
+                retrieval_strats_val,  # retrieval_strategies
+                top_k_val,  # top_k
+                hybrid_alpha_val,  # hybrid_alpha
             )
 
         load_btn.click(
             on_load_config,
             inputs=[config_selector, session_id],
             outputs=[
-                config_status,
-                config_name,
-                config_desc,
-                vectorstore,
-                distance_metric,
-                collection_name,
-                persist_dir,
-                chunking_strategy,
-                chunk_size,
-                overlap,
-                similarity_threshold,
-                max_chunk_size,
-                embedding_provider,
-                embedding_model,
-                device,
-                batch_size,
-                retrieval_strategies,
-                top_k,
-                hybrid_alpha,
+                config_status,  # 1
+                config_name,  # 2
+                config_desc,  # 3
+                vectorstore,  # 4
+                distance_metric,  # 5
+                collection_name,  # 6  ← CRITICAL!
+                persist_dir,  # 7  ← CRITICAL!
+                chunking_strategy,  # 8
+                chunk_size,  # 9
+                overlap,  # 10
+                similarity_threshold,  # 11
+                max_chunk_size,  # 12
+                embedding_provider,  # 13
+                embedding_model,  # 14
+                device,  # 15
+                batch_size,  # 16
+                retrieval_strategies,  # 17
+                top_k,  # 18
+                hybrid_alpha,  # 19
             ],
-        )
-
-        # -----------------------------------------------------------------
-        # Save config
-        # -----------------------------------------------------------------
-
-        save_btn.click(
-            save_config,
-            inputs=[
-                config_name,
-                config_desc,
-                vectorstore,
-                distance_metric,
-                collection_name,
-                persist_dir,
-                chunking_strategy,
-                chunk_size,
-                overlap,
-                similarity_threshold,
-                max_chunk_size,
-                embedding_provider,
-                embedding_model,
-                device,
-                batch_size,
-                retrieval_strategies,
-                top_k,
-                hybrid_alpha,
-                llm_provider,
-                llm_model,
-                temperature,
-                max_tokens,
-                session_id,
-            ],
-            outputs=config_status,
         )
 
         # -----------------------------------------------------------------
@@ -757,63 +749,99 @@ def build_playground() -> gr.Blocks:
         # -----------------------------------------------------------------
         # Upload document (Tab: Corpus & Chunks → Upload)
         # -----------------------------------------------------------------
-
         def on_upload_document(
-            selected_config: str,
-            file,
-            title: str,
-            doc_type: str,
-            uploader_id: str,
-            replace_existing: bool,
+                selected_config: str,
+                file,
+                title: str,
+                doctype: str,
+                uploader_id: str,
+                replace_existing: bool,
         ):
+            """Upload and ingest document into vector store."""
+
+            # Validation
             if not selected_config:
                 return "⚠️ Please select a config/domain in header dropdown.", []
+
             if file is None:
                 return "⚠️ Please choose a file to upload.", []
 
             from core.services.document_service import ValidationError, ProcessingError
 
             try:
+                # Get service for selected config
                 service = get_service_for_config(selected_config)
+                logger.info(f"Got service for config: {selected_config}")
 
+                # Generate valid SHA-256 file hash
+                file.seek(0)  # Reset file pointer
+                file_content = file.read()
+                file_hash = hashlib.sha256(file_content).hexdigest()  # ← CRITICAL FIX!
+                file.seek(0)  # Reset for upload
+
+                logger.info(f"File hash generated: {file_hash[:16]}...")
+
+                # Generate doc_id
                 doc_id = f"{Path(file.name).stem}_{int(datetime.now().timestamp())}"
+
+                # Prepare metadata with ALL required fields
                 metadata = {
                     "doc_id": doc_id,
                     "title": title or Path(file.name).stem,
-                    "doc_type": doc_type or "playground",
+                    "doc_type": doctype or "playground",
                     "uploader_id": uploader_id or "playground_user",
+                    "domain": selected_config,  # ← ADD THIS
+                    "source_file_path": file.name,  # ← ADD THIS
+                    "file_hash": file_hash,  # ← ADD THIS (valid SHA-256)
                 }
 
+                logger.info(f"Uploading document with metadata: {metadata}")
+
+                # Upload document
                 result = service.upload_document(
                     file_obj=file,
                     metadata=metadata,
                     replace_existing=replace_existing,
                 )
 
+                logger.info(f"Upload result: {result}")
+
+                # Prepare metrics table
                 metrics_table = [
                     ["Document ID", result.get("doc_id", doc_id)],
-                    ["Chunks Ingested", result.get("chunks_ingested", 0)],
+                    ["Chunks Ingested", str(result.get("chunks_ingested", 0))],
                     ["Embedding Model", result.get("embedding_model", "N/A")],
                     ["Chunking Strategy", result.get("chunking_strategy", "N/A")],
-                    ["File Hash", result.get("file_hash", "N/A")],
+                    ["File Hash", file_hash[:16] + "..."],  # Show first 16 chars
                     ["Status", result.get("status", "success")],
                 ]
 
+                # Prepare success message
                 success_msg = (
-                    f"✅ Uploaded `{file.name}` as `{result.get('doc_id', doc_id)}`\n\n"
-                    f"- **Chunks:** {result.get('chunks_ingested', 0)}\n"
-                    f"- **Embedding Model:** {result.get('embedding_model', 'N/A')}\n"
-                    f"- **Chunking:** {result.get('chunking_strategy', 'N/A')}\n"
+                    f"✅ **Upload Successful!**\n\n"
+                    f"📄 **File:** {file.name}\n"
+                    f"🆔 **Doc ID:** {result.get('doc_id', doc_id)}\n"
+                    f"📦 **Chunks:** {result.get('chunks_ingested', 0)}\n"
+                    f"🤖 **Model:** {result.get('embedding_model', 'N/A')}\n"
+                    f"✂️ **Chunking:** {result.get('chunking_strategy', 'N/A')}"
                 )
 
                 return success_msg, metrics_table
 
             except ValidationError as e:
-                return f"❌ Validation error: {e}", []
+                error_msg = f"❌ **Validation Error:**\n\n{str(e)}"
+                logger.error(f"Validation error: {e}")
+                return error_msg, []
+
             except ProcessingError as e:
-                return f"❌ Processing error: {e}", []
+                error_msg = f"❌ **Processing Error:**\n\n{str(e)}"
+                logger.error(f"Processing error: {e}")
+                return error_msg, []
+
             except Exception as e:
-                return f"❌ Unexpected error: {e}", []
+                error_msg = f"❌ **Unexpected Error:**\n\n{str(e)}"
+                logger.exception(f"Upload failed for {selected_config}")
+                return error_msg, []
 
         upload_btn.click(
             fn=on_upload_document,
@@ -825,9 +853,11 @@ def build_playground() -> gr.Blocks:
                 upload_uploader,
                 upload_replace,
             ],
-            outputs=[upload_status, upload_metrics],
+            outputs=[
+                upload_status,  # Status message
+                upload_metrics,  # Metrics table
+            ],
         )
-
         # -----------------------------------------------------------------
         # Corpus Explorer (Tab: Corpus & Chunks → Explore)
         # -----------------------------------------------------------------

@@ -197,11 +197,8 @@ class DocumentPipeline:
 
         # Step 4: Create vector store (needs dimension and metadata schema)
         logger.debug("Creating vector store via VectorStoreFactory...")
-        self.vectorstore: VectorStoreInterface = VectorStoreFactory.create_store(
-            config=self.config.vectorstore,
-            embedding_dimension=embedding_dimension,
-            metadata_fields=self.metadata_fields
-        )
+        self.vectorstore: VectorStoreInterface = VectorStoreFactory.create_vectorstore(
+            config=self.config.vectorstore )
 
         logger.info(f"✅ Vector store created: {self.config.vectorstore.provider}")
 
