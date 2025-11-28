@@ -118,18 +118,17 @@ class DocumentPipeline:
     All components are created from domain configuration using factories.
     No direct instantiation of concrete classes!
     """
-
     def __init__(self, domain_config: Any):
         """
         Initialize pipeline with domain configuration.
-
+    
         This method:
         1. Stores domain config
         2. Creates embedding model via factory
         3. Creates chunker via factory (needs embedding model name)
         4. Creates vector store via factory (needs embedding dimension)
         5. Creates retrieval strategies via factory
-
+    
         Parameters:
         -----------
         domain_config : Any
@@ -139,7 +138,7 @@ class DocumentPipeline:
             - chunking: Chunking strategy config
             - vectorstore: Vector store config
             - retrieval: Retrieval strategies config (optional)
-
+    
         Raises:
         -------
         ValueError:
@@ -149,32 +148,30 @@ class DocumentPipeline:
         """
         self.config = domain_config
         self.domain_id = getattr(domain_config, 'domain_id', 'default')
-
+        
         logger.info(f"Initializing DocumentPipeline for domain: {self.domain_id}")
-
+    
         # Step 1: Create embedding model (needed first for dimension)
         logger.debug("Creating embedding model via EmbeddingFactory...")
         self.embedding_model: EmbeddingInterface = EmbeddingFactory.create_embedder(
             config=self.config.embeddings  # Note: 'embeddings' not 'embedding'
         )
-
+        
         embedding_model_name = self.embedding_model.get_model_name()
         embedding_dimension = self.embedding_model.get_embedding_dimension()
-
         logger.info(
             f"✅ Embedding model created: {embedding_model_name} "
             f"({embedding_dimension}-dim)"
         )
-
+    
         # Step 2: Create chunker (needs embedding model name for metadata)
         logger.debug("Creating chunker via ChunkingFactory...")
         self.chunker: ChunkerInterface = ChunkingFactory.create_chunker(
             config=self.config.chunking,
             embedding_model_name=embedding_model_name
         )
-
         logger.info(f"✅ Chunker created: {self.config.chunking.strategy}")
-
+    
         # Step 3: Define metadata fields schema
         self.metadata_fields = [
             # Identity
@@ -194,82 +191,128 @@ class DocumentPipeline:
             # Content
             "page_num", "char_range", "chunk_text"
         ]
-
+    
         # Step 4: Create vector store (needs dimension and metadata schema)
         logger.debug("Creating vector store via VectorStoreFactory...")
         self.vectorstore: VectorStoreInterface = VectorStoreFactory.create_vectorstore(
-            config=self.config.vectorstore )
-
+            config=self.config.vectorstore
+        )
         logger.info(f"✅ Vector store created: {self.config.vectorstore.provider}")
-
+    
         # Step 5: Create retrieval strategies
         logger.debug("Creating retrieval strategies via RetrievalFactory...")
         self.retrieval_strategies = self._init_retrieval_strategies()
-
+        
         logger.info(
             f"✅ DocumentPipeline initialized for domain '{self.domain_id}' "
             f"with {len(self.retrieval_strategies)} retrieval strategies"
         )
-
+        
+        
     def _init_retrieval_strategies(self) -> Dict[str, RetrievalInterface]:
         """
         Initialize all configured retrieval strategies.
-
+    
         Creates retriever instances for each strategy in config.
         Supports: vector_similarity, hybrid, bm25, etc.
-
+    
         Returns:
         --------
         Dict[str, RetrievalInterface]:
             Dictionary mapping strategy name to retriever instance
-            Example: {"hybrid": HybridRetrieval(...), "vector_similarity": VectorSimilarityRetrieval(...)}
         """
+        # Get retrieval config section
         retrieval_config = getattr(self.config, 'retrieval', None)
+        
         if not retrieval_config:
             logger.warning("No retrieval config found, using default vector_similarity")
-            retrieval_config = {"strategies": ["vector_similarity"]}
-
-        # Get list of strategies to initialize
-        strategies = getattr(retrieval_config, 'strategies', ["vector_similarity"])
-        if isinstance(strategies, str):
-            strategies = [strategies]
-
+            strategies = ["vector_similarity"]
+        else:
+            strategies = getattr(retrieval_config, 'strategies', ["vector_similarity"])
+            if isinstance(strategies, str):
+                strategies = [strategies]
+    
+        logger.info(f"Initializing retrieval strategies: {strategies}")
+    
+        # 🔥 CHECK: Is vector store empty?
+        if hasattr(self.vectorstore, 'get_all_documents'):
+            try:
+                corpus, doc_ids = self.vectorstore.get_all_documents()
+                corpus_size = len(corpus)
+                logger.info(f"Vector store corpus size: {corpus_size} documents")
+                
+                # ⚠️ If corpus is empty, skip BM25/hybrid strategies
+                if corpus_size == 0:
+                    logger.warning("Vector store is empty! Skipping BM25/hybrid strategies.")
+                    # Filter out strategies that need corpus
+                    strategies = [s for s in strategies if s not in ['bm25', 'hybrid']]
+                    if not strategies:
+                        strategies = ['vector_similarity']  # Fallback
+                        
+            except Exception as e:
+                logger.warning(f"Could not check corpus size: {e}")
+    
         retrievers = {}
-        bm25_index = None  # Shared BM25 index for hybrid retrieval
-
+        failed_strategies = []
+    
         for strategy_name in strategies:
             try:
-                # Get strategy-specific config
-                strategy_config = getattr(retrieval_config, strategy_name, {})
-                if isinstance(strategy_config, dict):
-                    strategy_config['strategy'] = strategy_name
-
-                # Build BM25 index if needed (for hybrid/bm25 strategies)
-                if strategy_name in ["hybrid", "bm25"] and bm25_index is None:
-                    logger.info("Building BM25 index for sparse retrieval...")
-                    # BM25 index built by factory from vector store corpus
-                    bm25_index = None  # Factory will build it
-
+                logger.debug(f"Creating retriever for strategy: {strategy_name}")
+                
                 # Create retriever via factory
                 retriever = RetrievalFactory.create_retriever(
-                    config=strategy_config,
+                    strategy_name=strategy_name,
+                    config=self.config,
                     vectorstore=self.vectorstore,
-                    embedding_model=self.embedding_model,
-                    bm25_index=bm25_index
+                    embedding_model=self.embedding_model
                 )
-
+                
                 retrievers[strategy_name] = retriever
                 logger.info(f"✅ Loaded retrieval strategy: {strategy_name}")
-
-            except Exception as e:
-                logger.error(f"Failed to initialize strategy '{strategy_name}': {e}")
-                # Continue with other strategies instead of failing completely
+                
+            except ZeroDivisionError as e:
+                # Specific handling for division by zero
+                logger.error(f"❌ Failed '{strategy_name}': Division by zero - likely empty corpus or invalid alpha parameter")
+                failed_strategies.append((strategy_name, "Division by zero - check corpus and alpha config"))
                 continue
-
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize strategy '{strategy_name}': {type(e).__name__}: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
+                failed_strategies.append((strategy_name, str(e)))
+                continue
+    
+        # Fallback: if all strategies failed, use vector_similarity
         if not retrievers:
-            raise RuntimeError("Failed to initialize any retrieval strategies")
-
+            if 'vector_similarity' not in [s for s, _ in failed_strategies]:
+                logger.warning("All strategies failed, attempting vector_similarity fallback...")
+                try:
+                    retriever = RetrievalFactory.create_retriever(
+                        strategy_name='vector_similarity',
+                        config=self.config,
+                        vectorstore=self.vectorstore,
+                        embedding_model=self.embedding_model
+                    )
+                    retrievers['vector_similarity'] = retriever
+                    logger.info("✅ Fallback to vector_similarity successful")
+                except Exception as e:
+                    error_msg = "Failed to initialize any retrieval strategies:\n"
+                    for strategy, error in failed_strategies:
+                        error_msg += f"  - {strategy}: {error}\n"
+                    error_msg += f"  - vector_similarity (fallback): {e}\n"
+                    raise RuntimeError(error_msg)
+            else:
+                error_msg = "Failed to initialize any retrieval strategies:\n"
+                for strategy, error in failed_strategies:
+                    error_msg += f"  - {strategy}: {error}\n"
+                raise RuntimeError(error_msg)
+        
+        if failed_strategies:
+            logger.warning(f"Some strategies failed: {[s for s, _ in failed_strategies]}")
+    
         return retrievers
+
 
     def process_document(
             self,

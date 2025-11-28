@@ -26,6 +26,7 @@ PyMuPDF>=1.23.0                   # PDF processing (fitz) - BEST
 PyPDF2>=3.0.0                     # PDF fallback
 python-docx>=0.8.11               # DOCX processing
 chardet>=5.0.0                    # Character encoding detection (MISSING)
+rank-bm25>=0.2.2
 
 # ============================================
 # WEB FRAMEWORK

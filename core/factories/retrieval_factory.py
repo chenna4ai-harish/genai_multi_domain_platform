@@ -231,71 +231,82 @@ class RetrievalFactory:
     @staticmethod
     def create_retriever(
             strategy_name: str,
-            config: DomainConfig,
-            vectorstore: VectorStoreInterface,
-            embedding_model: EmbeddingInterface
-    ) -> RetrievalInterface:
+            config: Any,
+            vectorstore: Any,
+            embedding_model: Any,  # ← MUST BE HERE!
+            bm25_index: Optional[Any] = None
+    ):
         """
-        Create a single retrieval strategy by name.
+        Create retriever based on strategy name.
 
         Parameters:
         -----------
         strategy_name : str
-            Retrieval strategy name: "vector_similarity", "bm25", or "hybrid"
-        config : DomainConfig
-            Domain configuration
+            Strategy to create ("vector_similarity", "bm25", "hybrid")
+        config : Any
+            Domain configuration object
         vectorstore : VectorStoreInterface
-            Vector store instance
+            Vector database instance
         embedding_model : EmbeddingInterface
-            Embedding model instance
+            Embedding model (REQUIRED for vector/hybrid strategies)
+        bm25_index : Any, optional
+            BM25 index (required for bm25/hybrid strategies)
 
         Returns:
         --------
         RetrievalInterface:
-            Retriever instance
-
-        Raises:
-        -------
-        ValueError:
-            If unknown strategy name
-
-        Example:
-        --------
-        # Create hybrid retriever
-        hybrid = RetrievalFactory.create_retriever(
-            strategy_name="hybrid",
-            config=domain_config,
-            vectorstore=vectorstore,
-            embedding_model=embedder
-        )
+            Configured retriever instance
         """
-        logger.debug(f"Creating retriever: {strategy_name}")
+        strategy_name = strategy_name.lower()
+        logger.info(f"Creating retriever for strategy: {strategy_name}")
 
-        # Strategy 1: Vector Similarity (Dense/Semantic)
+        # ===== VECTOR SIMILARITY =====
         if strategy_name == "vector_similarity":
-            return RetrievalFactory._create_vector_similarity_retrieval(
+            from core.retrievals.vector_similarity_retrieval import VectorSimilarityRetrieval
+
+            return VectorSimilarityRetrieval(
                 vectorstore=vectorstore,
-                embedding_model=embedding_model
+                embedding_model=embedding_model  # ← PASS THIS!
             )
 
-        # Strategy 2: BM25 (Sparse/Keywords)
+        # ===== BM25 =====
         elif strategy_name == "bm25":
-            return RetrievalFactory._create_bm25_retrieval(
-                vectorstore=vectorstore
-            )
+            from core.retrievals.bm25_retrieval import BM25Retrieval
 
-        # Strategy 3: Hybrid (Dense + Sparse) - RECOMMENDED
+            if bm25_index is None:
+                raise ValueError("BM25 strategy requires bm25_index parameter")
+
+            return BM25Retrieval(bm25_index=bm25_index)
+
+        # ===== HYBRID =====
         elif strategy_name == "hybrid":
-            return RetrievalFactory._create_hybrid_retrieval(
-                config=config,
+            from core.retrievals.hybrid_retrieval import HybridRetrieval
+
+            if bm25_index is None:
+                raise ValueError("Hybrid strategy requires bm25_index parameter")
+
+            # Get alpha from config
+            retrieval_config = getattr(config, 'retrieval', None)
+            if retrieval_config:
+                hybrid_config = getattr(retrieval_config, 'hybrid', {})
+                if isinstance(hybrid_config, dict):
+                    alpha = hybrid_config.get('alpha', 0.7)
+                else:
+                    alpha = getattr(hybrid_config, 'alpha', 0.7)
+            else:
+                alpha = 0.7
+
+            return HybridRetrieval(
                 vectorstore=vectorstore,
-                embedding_model=embedding_model
+                embedding_model=embedding_model,  # ← PASS THIS!
+                bm25_index=bm25_index,
+                alpha=alpha
             )
 
         else:
             raise ValueError(
-                f"Unknown retrieval strategy: '{strategy_name}'\n"
-                f"Supported strategies: vector_similarity, bm25, hybrid"
+                f"Unknown retrieval strategy: '{strategy_name}'. "
+                f"Available: vector_similarity, bm25, hybrid"
             )
 
     # =========================================================================

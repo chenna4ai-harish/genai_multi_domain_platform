@@ -349,7 +349,6 @@ class DocumentService:
     # =========================================================================
     # PUBLIC API METHODS (Called by UI)
     # =========================================================================
-
     def upload_document(
             self,
             file_obj: Any,
@@ -359,158 +358,97 @@ class DocumentService:
         """
         Upload and process a document end-to-end.
 
-        This is the PRIMARY INGESTION METHOD called by the UI.
-
-        Workflow:
-        ---------
-        1. Validate file type (extension check)
-        2. Validate file size (max MB check)
-        3. Validate required metadata fields
-        4. Extract text from file (PDF, DOCX, TXT)
-        5. Compute file hash (SHA-256 for provenance)
-        6. Enrich metadata with system fields
-        7. Delegate to pipeline for processing
-        8. Return ingestion summary
-
-        Parameters:
-        -----------
-        file_obj : Any
-            File object with .name, .read(), .seek() attributes
-            Typically from Gradio: UploadedFile or similar
-
-        metadata : Dict[str, Any]
-            Metadata dictionary with required fields:
-            - doc_id: str (unique identifier)
-            - title: str (document title)
-            - doc_type: str (policy, faq, manual, etc.)
-            - uploader_id: str (user who uploaded)
-
-            Optional fields:
-            - author: str (original document author)
-            - version: str (document version, default: "1.0")
-
-        replace_existing : bool
-            If True, deletes existing document before ingestion
-            Default: False
-
-        Returns:
-        --------
-        Dict[str, Any]:
-            Ingestion summary with:
-            - doc_id: Document identifier
-            - chunks_ingested: Number of chunks created
-            - status: "success"
-            - embedding_model: Model name used
-            - chunking_strategy: Strategy used
-            - file_hash: SHA-256 hash
-
-        Raises:
-        -------
-        ValidationError:
-            If validation fails (file type, size, metadata)
-        ProcessingError:
-            If text extraction or pipeline processing fails
-
-        Example:
-        --------
-        # In UI handler:
-        def upload_handler(file, title, author, doc_type):
-            service = DocumentService("hr")
-
-            try:
-                result = service.upload_document(
-                    file_obj=file,
-                    metadata={
-                        "doc_id": f"hr_doc_{datetime.now().timestamp()}",
-                        "title": title,
-                        "author": author,
-                        "doc_type": doc_type,
-                        "uploader_id": "current_user@company.com"
-                    },
-                    replace_existing=True
-                )
-                return f"✅ Success! Ingested {result['chunks_ingested']} chunks"
-            except ValidationError as e:
-                return f"❌ Validation Error: {e}"
-            except ProcessingError as e:
-                return f"❌ Processing Error: {e}"
+        Steps:
+        1. Validate file type
+        2. Save file object to temp file (parsers need file path!)
+        3. Extract text using parser_factory
+        4. Compute hash
+        5. Process via pipeline
+        6. Cleanup temp file
         """
-        logger.info(
-            f"Upload request: doc_id={metadata.get('doc_id')}, "
-            f"domain={self.domain_id}"
-        )
+        from pathlib import Path
+        import tempfile
+        import shutil
+        from datetime import datetime
 
-        # Step 1: Validate file has name attribute
+        logger.info(f"Upload request: doc_id={metadata.get('doc_id')}, domain={self.domain_id}")
+
+        # Get filename from file object
         filename = getattr(file_obj, 'name', None)
         if not filename:
-            raise ValidationError("Uploaded file missing 'name' attribute")
+            raise ValidationError("File object missing 'name' attribute")
 
-        # Step 2: Validate file type
-        self._validate_file_type(filename)
+        # Validate file type
+        from core.utils.validation import validate_file_type
+        validate_file_type(filename, self.allowed_file_types)
+        logger.debug(f"✅ File type validated: {filename}")
 
-        # Step 3: Validate file size
-        self._validate_file_size(file_obj)
-
-        # Step 4: Validate required metadata
-        self._validate_metadata(metadata)
-
-        # Step 5: Extract text from file
-        logger.info(f"Extracting text from file: {filename}")
+        tmp_path = None
         try:
-            extracted_data = extract_text_from_file(file_obj, filename)
-            text = extracted_data.get('text', '')
+            # Step 1: Save to temporary file (parsers need file path!)
+            file_ext = Path(filename).suffix
+            with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+                tmp_path = tmp_file.name
+                file_obj.seek(0)  # Reset file pointer
+                shutil.copyfileobj(file_obj, tmp_file)
 
-            if not text or not text.strip():
-                raise ProcessingError(f"No text could be extracted from file: {filename}")
+            logger.debug(f"Saved temporary file: {tmp_path}")
 
+            # Step 2: Extract text using parser_factory
+            from core.utils.file_parsers.parser_factory import extract_text_from_file
+
+            text = extract_text_from_file(tmp_path)
             logger.info(f"✅ Extracted {len(text)} characters from {filename}")
 
-        except Exception as e:
-            logger.error(f"Text extraction failed for {filename}: {e}")
-            raise ProcessingError(f"Failed to extract text from file: {e}")
+            if not text or len(text.strip()) < 10:
+                raise ProcessingError(f"No meaningful text extracted from {filename}")
 
-        # Step 6: Compute file hash for provenance
-        file_hash = self._compute_file_hash(file_obj)
+            # Step 3: Compute file hash
+            file_obj.seek(0)  # Reset again for hashing
+            from core.utils.hashing import compute_file_hash
+            file_hash = compute_file_hash(file_obj)
+            logger.debug(f"Computed file hash: {file_hash[:16]}...")
 
-        # Step 7: Enrich metadata with system fields
-        enriched_metadata = {
-            **metadata,  # User-provided fields
-            "domain": self.domain_id,  # Enforce domain
-            "source_file_path": filename,
-            "file_hash": file_hash,
-            "upload_timestamp": datetime.utcnow().isoformat(),
-            "version": metadata.get("version", "1.0"),
-            "author": metadata.get("author", "Unknown")
-        }
+            # Step 4: Enrich metadata
+            enriched_metadata = {
+                **metadata,
+                "source_file": Path(filename).name,
+                "source_file_hash": file_hash,
+                "upload_timestamp": datetime.utcnow().isoformat(),
+                "domain": self.domain_id,
+            }
 
-        # Step 8: Delegate to pipeline for processing
-        logger.info(f"Delegating to pipeline: doc_id={metadata['doc_id']}")
-        try:
+            # Step 5: Process via pipeline
             result = self.pipeline.process_document(
                 text=text,
                 doc_id=enriched_metadata["doc_id"],
-                domain=self.domain_id,
-                source_file_path=filename,
-                file_hash=file_hash,
-                uploader_id=enriched_metadata["uploader_id"],
+                domain=enriched_metadata["domain"],
+                source_file_path=enriched_metadata["source_file"],
+                file_hash=enriched_metadata["source_file_hash"],
+                uploader_id=enriched_metadata.get("uploader_id"),
                 title=enriched_metadata.get("title"),
-                doc_type=enriched_metadata.get("doc_type"),
-                author=enriched_metadata.get("author"),
-                version=enriched_metadata.get("version"),
+                doc_type=enriched_metadata.get("doc_type", "document"),
                 replace_existing=replace_existing
             )
-
-            # Add file_hash to result
-            result['file_hash'] = file_hash
 
             logger.info(f"✅ Upload successful: {result}")
             return result
 
+        except ValidationError:
+            raise  # Re-raise validation errors as-is
+
         except Exception as e:
-            logger.exception(
-                f"Pipeline processing failed for doc_id={metadata.get('doc_id')}"
-            )
-            raise ProcessingError(f"Document processing failed: {e}")
+            logger.exception(f"Upload failed for {filename}: {e}")
+            raise ProcessingError(f"Failed to process document: {e}")
+
+        finally:
+            # Step 6: Cleanup temp file
+            if tmp_path:
+                try:
+                    Path(tmp_path).unlink(missing_ok=True)
+                    logger.debug(f"Cleaned up temp file: {tmp_path}")
+                except Exception as cleanup_err:
+                    logger.warning(f"Failed to cleanup temp file: {cleanup_err}")
 
     def query(
             self,
