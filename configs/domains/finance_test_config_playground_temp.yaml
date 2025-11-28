@@ -1,0 +1,66 @@
+chunking:
+  recursive:
+    chunk_size: 400
+    overlap: 40
+    strategy: recursive
+  semantic:
+    max_chunk_size: 1000
+    similarity_threshold: 0.7
+    strategy: semantic
+  strategy: recursive
+created_at: '2025-11-27T21:44:56.752903'
+description: Finance domain test
+display_name: Finance Test Configuration
+domain_id: finance_test_config
+embedding:
+  api_key: ${GEMINI_API_KEY}
+  mode: api_key
+  model_name: gemini-1.0-pro
+  project_id: ${VERTEXAI_PROJECT_ID}
+  provider: Gemini
+embeddings:
+  api_key: null
+  batch_size: 32
+  device: cpu
+  model_name: all-MiniLM-L6-v2
+  normalize: true
+  provider: sentence_transformers
+last_modified: '2025-11-27T21:44:56.752903'
+metadata:
+  compute_file_hash: true
+  enable_deprecation: true
+  extract_page_numbers: true
+  required_fields:
+  - doc_id
+  - title
+  - domain
+  - doc_type
+  - uploader_id
+  track_versions: true
+name: finance_test_config
+playground_name: finance_test_config
+retrieval:
+  hybrid:
+    alpha: 0.7
+    normalize_scores: true
+  similarity: cosine
+  strategies:
+  - vector_similarity
+  top_k: 10
+security:
+  allowed_file_types:
+  - pdf
+  - xlsx
+  - txt
+  max_file_size_mb: 50
+  require_authentication: false
+session_id: 6d98906f
+vectorstore:
+  api_key: null
+  cloud: aws
+  collection_name: default_collection
+  dimension: null
+  index_type: hnsw
+  persist_directory: ./data/chroma_db
+  provider: chromadb
+  region: us-east-1
