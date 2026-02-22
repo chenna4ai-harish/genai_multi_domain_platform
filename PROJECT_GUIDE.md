@@ -251,7 +251,7 @@ DocumentService("hr")
 9. Cleans up the temp file in a `finally` block
 
 **What the service does on `query_with_answer()`:**
-1. Applies `deprecated=False` filter by default
+1. Applies `deprecated_flag=False` filter by default
 2. Calls `pipeline.query()` → retrieves relevant chunks (hybrid by default)
 3. Resolves LLM provider/model using **priority chain**:
    - Explicit call-time params → config dict arg → **domain config `llm` section** → hardcoded fallback
@@ -334,10 +334,10 @@ def _init_retrieval_strategies(self):
     for strategy_name in strategies:
         bm25_index = None
 
-        # BM25 and hybrid need a pre-built keyword index
+        # BM25 and hybrid need a pre-built keyword index (+ metadata for filtering)
         if strategy_name in ["bm25", "hybrid"]:
-            corpus, doc_ids = self.vectorstore.get_all_documents()
-            bm25_index = BM25Retrieval(corpus=corpus, doc_ids=doc_ids)
+            corpus, doc_ids, metadatas = self.vectorstore.get_all_documents_with_metadata()
+            bm25_index = BM25Retrieval(corpus=corpus, doc_ids=doc_ids, metadata=metadatas)
 
         # Factory creates the right retriever
         retriever = RetrievalFactory.create_retriever(
@@ -400,9 +400,9 @@ return {
 **`deprecate_document()` — metadata update:**
 ```python
 # 1. Fetch all chunk IDs for doc_id
-# 2. Merge {deprecated: True, deprecated_date, deprecation_reason} into each chunk's metadata
+# 2. Merge {deprecated_flag: True, deprecated_date, deprecation_reason} into each chunk's metadata
 # 3. ChromaDB collection.update(ids=ids, metadatas=merged_metadatas)
-# After this, all queries with deprecated=False will exclude this doc
+# After this, all queries with deprecated_flag=False will exclude this doc
 ```
 
 ---
@@ -854,16 +854,21 @@ def search(self, query_embedding, top_k, filters=None):
         where=filters,   # ChromaDB metadata filter syntax: {"doc_type": "policy"}
         include=["documents", "metadatas", "distances"]
     )
-    # Convert ChromaDB's distance to similarity: score = 1 - distance
-    return [{"id": id, "score": 1-dist, "document": doc, "metadata": meta}
+    # Convert ChromaDB distance to normalized similarity score:
+    # score = 1 / (1 + distance)
+    return [{"id": id, "distance": dist, "score": 1/(1+dist), "document": doc, "metadata": meta}
             for id, doc, meta, dist in zip(...)]
 ```
 
-**`get_all_documents()` — required for BM25:**
+**`get_all_documents()` / `get_all_documents_with_metadata()` — required for BM25:**
 ```python
 def get_all_documents(self):
     raw = self.collection.get(include=["documents", "ids"])
     return raw["documents"], raw["ids"]  # (corpus_texts, chunk_ids)
+
+def get_all_documents_with_metadata(self):
+    raw = self.collection.get(include=["documents", "metadatas"])
+    return raw["documents"], raw["ids"], raw["metadatas"]
 ```
 
 **Storage layout on disk:**
@@ -1095,7 +1100,7 @@ class ChunkMetadata(BaseModel):
     processing_timestamp: Optional[str] = None
 
     # ── LIFECYCLE (Phase 2) ───────────────────
-    deprecated: bool = False
+    deprecated_flag: bool = False
     deprecated_date: Optional[str] = None
     deprecation_reason: Optional[str] = None
     superseded_by_chunk_id: Optional[str] = None  # points to replacement
@@ -1215,17 +1220,17 @@ app.py: svc.query_with_answer(query_text="How many vacation days?")
     │
     │  ── SERVICE LAYER (document_service.py) ────────────────────────────
     ▼
-1. Add deprecated filter: metadata_filters = {"deprecated": False}
+1. Add deprecated filter: metadata_filters = {"deprecated_flag": False}
 
 2. pipeline.query("How many vacation days?", strategy_name="hybrid",
-                  metadata_filters={"deprecated": False}, top_k=10)
+                  metadata_filters={"deprecated_flag": False}, top_k=10)
     │
     │  ── PIPELINE LAYER ─────────────────────────────────────────────────
     ▼
 3. retriever = self.retrieval_strategies["hybrid"]
    → HybridRetrieval instance
 
-4. retriever.retrieve("How many vacation days?", {"deprecated":False}, top_k=10)
+4. retriever.retrieve("How many vacation days?", {"deprecated_flag":False}, top_k=10)
     │
     │  ── HYBRID RETRIEVAL ────────────────────────────────────────────────
     ▼
@@ -1233,9 +1238,9 @@ app.py: svc.query_with_answer(query_text="How many vacation days?")
    a. query_vector = embedding_model.embed_texts(["How many vacation days?"])[0]
       → shape (384,), float32, normalized
 
-   b. dense_results = vectorstore.search(query_vector, top_k=20, {"deprecated":False})
+   b. dense_results = vectorstore.search(query_vector, top_k=20, {"deprecated_flag":False})
       ChromaDB HNSW search → 20 semantically similar chunks
-      Each result: {id, score (0-1), document, metadata}
+      Each result: {id, distance, score (0-1 normalized), document, metadata}
 
 6. SPARSE PATH:
    a. bm25_index.retrieve("How many vacation days?", top_k=20)
@@ -1330,7 +1335,7 @@ manage.py: service.deprecate_document("handbook_2023", reason="...", superseded_
 
 4. For each chunk, merge update into existing metadata:
    updated_fields = {
-     "deprecated": True,
+    "deprecated_flag": True,
      "deprecated_date": "2026-02-22T11:00:00",
      "deprecation_reason": "Superseded by handbook_2025"
    }
@@ -1342,7 +1347,7 @@ manage.py: service.deprecate_document("handbook_2023", reason="...", superseded_
 Return: {"doc_id": "handbook_2023", "chunks_deprecated": 45,
          "deprecated_date": "2026-02-22T11:00:00", ...}
 
-Effect: Any future query with metadata_filters={"deprecated": False}
+Effect: Any future query with metadata_filters={"deprecated_flag": False}
         will NOT return any chunk from handbook_2023
 ```
 
@@ -1873,7 +1878,7 @@ TestValidation:
 
 TestQuery:
   test_query_returns_results                  — returns list
-  test_query_adds_deprecated_filter           — deprecated=False auto-added
+  test_query_adds_deprecated_filter           — deprecated_flag=False auto-added
   test_query_pipeline_exception_raises        — pipeline error → ProcessingError
 
 TestDeprecateDocument:
@@ -1907,7 +1912,7 @@ TestBM25Retrieval:
   test_retrieve_returns_list
   test_retrieve_top_k_respected
   test_relevant_chunk_ranked_high
-  test_empty_query_does_not_crash
+  test_empty_query_raises_value_error
 
 TestHybridRetrieval:
   test_retrieve_returns_list
@@ -1929,10 +1934,10 @@ TestIngestionAndQuery:
   test_list_documents_contains_ingested
   test_query_returns_results
   test_query_result_contains_ingested_doc
-  test_get_document_info              — chunk_count, deprecated=False
+  test_get_document_info              — chunk_count, deprecated=False (derived from deprecated_flag)
   test_list_chunks
   test_deprecate_document             — chunks_deprecated >= 1
-  test_deprecated_doc_excluded_from_query   — not in results when deprecated=False
+  test_deprecated_doc_excluded_from_query   — not in results when deprecated_flag=False
   test_deprecated_doc_included_when_requested — appears when include_deprecated=True
 ```
 
@@ -2072,7 +2077,7 @@ BM25 scores can be anything from 0 to 30+ depending on document length and term 
 
 ### Why Deprecated Chunks Are Updated, Not Deleted?
 
-Deleting deprecated chunks would lose the audit trail. A compliance team might need to know what was in the old handbook on a specific date. ChromaDB's metadata update (`collection.update()`) marks chunks as `deprecated=True` while preserving all original content and provenance data. The `deprecated=False` filter simply excludes them from normal queries.
+Deleting deprecated chunks would lose the audit trail. A compliance team might need to know what was in the old handbook on a specific date. ChromaDB's metadata update (`collection.update()`) marks chunks as `deprecated_flag=True` while preserving all original content and provenance data. The `deprecated_flag=False` filter simply excludes them from normal queries.
 
 ### Why Temp File in Upload?
 

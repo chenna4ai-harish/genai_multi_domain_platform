@@ -1,7 +1,7 @@
-# Architecture — GenAI Multi-Domain RAG Platform
+# Architecture - GenAI Multi-Domain RAG Platform
 
 **Last Updated:** February 2026
-**Stack:** Python · ChromaDB · SentenceTransformers / Gemini · Gradio · Pydantic · BM25
+**Stack:** Python � ChromaDB � SentenceTransformers / Gemini / OpenAI � Gradio � Pydantic � BM25
 
 ---
 
@@ -234,6 +234,7 @@ python -c "from core.services.domain_service import DomainService; DomainService
          └── Store with metadata in ChromaDB
 
 3. User asks question (DocumentService.query_with_answer)
+   ├── Adds metadata filter by default: {"deprecated_flag": False}
    ├── DocumentPipeline.query()
    │     ├── Embed query
    │     ├── HybridRetrieval → top-K chunks
@@ -250,6 +251,11 @@ python -c "from core.services.domain_service import DomainService; DomainService
 | `hybrid` | Dense + Sparse (BM25), weighted by alpha | **Default — most use cases** |
 | `vector_similarity` | Embedding cosine similarity only | Conceptual / semantic queries |
 | `bm25` | Keyword frequency (Okapi BM25) | Exact terms, IDs, codes |
+
+**Current retrieval contract (code-aligned):**
+- Vector store search returns both raw `distance` and normalized `score`.
+- Score normalization at store boundary uses `score = 1 / (1 + distance)`.
+- BM25/Hybrid initialization uses corpus + metadata when available (`get_all_documents_with_metadata`) so metadata filters are preserved in sparse retrieval.
 
 **Hybrid alpha guide:**
 

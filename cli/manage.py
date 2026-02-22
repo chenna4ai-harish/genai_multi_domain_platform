@@ -87,7 +87,7 @@ def get_service(domain: str) -> DocumentService:
 
 def cmd_list_docs(args) -> None:
     service = get_service(args.domain)
-    filters = {} if args.include_deprecated else {"deprecated": False}
+    filters = {} if args.include_deprecated else {"deprecated_flag": False}
     try:
         docs = service.list_documents(filters=filters if not args.include_deprecated else None)
     except ProcessingError as e:
@@ -106,7 +106,7 @@ def cmd_list_docs(args) -> None:
     print(f"{'doc_id':<30}  {'title':<35}  {'chunks':>6}  {'deprecated':>10}  {'uploaded'}")
     print("-" * 100)
     for d in docs:
-        dep = "YES" if d.get("deprecated") else "no"
+        dep = "YES" if d.get("deprecated_flag") else "no"
         ts = (d.get("first_seen") or "")[:19]
         print(
             f"{d.get('doc_id', ''):<30}  "

@@ -82,7 +82,7 @@ with open("handbook.pdf", "rb") as f:
 results = service.query(
     query_text="vacation policy",
     strategy="hybrid",
-    metadata_filters={"doc_type": "policy", "deprecated": False},
+            metadata_filters={"doc_type": "policy", "deprecated_flag": False},
     top_k=5
 )
 
@@ -520,7 +520,7 @@ class DocumentService:
         if not include_deprecated:
             if metadata_filters is None:
                 metadata_filters = {}
-            metadata_filters['deprecated'] = False
+            metadata_filters['deprecated_flag'] = False
 
         # Delegate to pipeline
         try:
@@ -693,7 +693,7 @@ class DocumentService:
         # 2) Filter deprecated docs unless requested
         filters = dict(metadata_filters or {})
         if not include_deprecated:
-            filters.setdefault("deprecated", False)
+            filters.setdefault("deprecated_flag", False)
 
         # 3) Run retrieval via pipeline (returns List[dict])
         results: List[Dict[str, Any]] = self.pipeline.query(
@@ -850,7 +850,7 @@ class DocumentService:
         ----------
         filters : Dict[str, Any], optional
             Document-level filters (equality)
-            Example: {"deprecated": False, "doc_type": "policy"}
+            Example: {"deprecated_flag": False, "doc_type": "policy"}
 
         Returns
         -------

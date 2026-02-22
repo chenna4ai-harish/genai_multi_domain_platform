@@ -349,7 +349,7 @@ def on_refresh_documents(domain_id: str) -> tuple:
         return "⚠️ Select a domain.", []
     try:
         svc = _get_doc_service(domain_id)
-        docs = svc.list_documents(filters={"deprecated": False})
+        docs = svc.list_documents(filters={"deprecated_flag": False})
         rows = [
             [
                 d.get("doc_id"),

@@ -187,7 +187,7 @@ class DocumentPipeline:
             "embedding_model_name", "embedding_dimension",
             "chunking_strategy", "chunking_params", "processing_timestamp",
             # Lifecycle
-            "deprecated", "deprecated_date", "deprecation_reason",
+            "deprecated_flag", "deprecated_date", "deprecation_reason",
             # Quality
             "authority_level", "review_status", "confidence_score",
             # Content
@@ -262,10 +262,14 @@ class DocumentPipeline:
                 # Build BM25 index only for bm25 / hybrid strategies
                 if strategy_name in ["bm25", "hybrid"]:
                     if hasattr(self.vectorstore, "get_all_documents"):
-                        corpus, doc_ids = self.vectorstore.get_all_documents()
+                        metadata = None
+                        if hasattr(self.vectorstore, "get_all_documents_with_metadata"):
+                            corpus, doc_ids, metadata = self.vectorstore.get_all_documents_with_metadata()
+                        else:
+                            corpus, doc_ids = self.vectorstore.get_all_documents()
                         if not corpus:
                             raise ValueError("Cannot build BM25 index: corpus is empty")
-                        bm25_index = BM25Retrieval(corpus=corpus, doc_ids=doc_ids)
+                        bm25_index = BM25Retrieval(corpus=corpus, doc_ids=doc_ids, metadata=metadata)
                         logger.info(
                             f"✅ BM25 index built for '{strategy_name}' "
                             f"with {len(corpus)} docs"
@@ -662,7 +666,7 @@ class DocumentPipeline:
 
         # Build the metadata update for each chunk
         updated_metadata = {
-            "deprecated": True,
+            "deprecated_flag": True,
             "deprecated_date": deprecated_date,
             "deprecation_reason": reason,
         }
@@ -761,7 +765,7 @@ class DocumentPipeline:
         ]
         upload_timestamps.sort()
 
-        deprecated_flags = [m.get("deprecated", False) for m in metadatas if m]
+        deprecated_flags = [m.get("deprecated_flag", False) for m in metadatas if m]
 
         return {
             "doc_id": doc_id,
@@ -849,7 +853,7 @@ class DocumentPipeline:
                     "chunk_count": 0,
                     "first_seen": None,
                     "last_seen": None,
-                    "deprecated": md.get("deprecated", False),
+                    "deprecated_flag": md.get("deprecated_flag", False),
                 },
             )
 

@@ -73,6 +73,7 @@ from chromadb.config import Settings
 from core.interfaces.vectorstore_interface import VectorStoreInterface
 from models.metadata_models import ChunkMetadata
 import logging
+import math
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -412,6 +413,41 @@ class ChromaDBStore(VectorStoreInterface):
                 f"Error: {e}"
             )
 
+    def get_all_documents_with_metadata(self) -> Tuple[List[str], List[str], List[Dict[str, Any]]]:
+        """
+        Retrieve all document texts, ids, and metadata from the collection.
+
+        Returns:
+            (corpus, doc_ids, metadatas)
+        """
+        logger.info(f"Retrieving all documents with metadata from: {self.collection_name}")
+
+        try:
+            total_count = self.collection.count()
+            if total_count == 0:
+                logger.warning("Collection is empty, returning empty corpus")
+                return [], [], []
+
+            results = self.collection.get(include=["documents", "metadatas"])
+            doc_ids = results["ids"]
+            corpus = results["documents"]
+            metadatas = results.get("metadatas") or [{} for _ in doc_ids]
+
+            if not (len(corpus) == len(doc_ids) == len(metadatas)):
+                raise RuntimeError(
+                    "Data mismatch: documents, ids, and metadatas lengths differ"
+                )
+
+            return corpus, doc_ids, metadatas
+
+        except Exception as e:
+            logger.error(f"Failed to retrieve documents with metadata: {e}", exc_info=True)
+            raise RuntimeError(
+                f"Failed to retrieve documents with metadata from ChromaDB\n"
+                f"Collection: {self.collection_name}\n"
+                f"Error: {e}"
+            )
+
     # =========================================================================
     # HELPER METHODS (Private)
     # =========================================================================
@@ -459,14 +495,36 @@ class ChromaDBStore(VectorStoreInterface):
         formatted = []
 
         for i in range(len(results['ids'][0])):
+            distance = results['distances'][0][i] if 'distances' in results else None
+            score = self._distance_to_score(distance)
             formatted.append({
                 'id': results['ids'][0][i],
                 'document': results['documents'][0][i],
                 'metadata': results['metadatas'][0][i],
-                'distance': results['distances'][0][i] if 'distances' in results else None
+                'distance': distance,
+                'score': score,
             })
 
         return formatted
+
+    @staticmethod
+    def _distance_to_score(distance: Optional[float]) -> float:
+        """
+        Convert distance to a normalized similarity score in [0, 1].
+
+        Uses 1 / (1 + distance), which is monotonic and robust to distance scale.
+        """
+        if distance is None:
+            return 0.0
+        try:
+            d = float(distance)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(d):
+            return 0.0
+        if d < 0:
+            d = 0.0
+        return 1.0 / (1.0 + d)
 
     def get_collection_stats(self) -> Dict[str, Any]:
         """

@@ -32,7 +32,7 @@ def make_mock_pipeline():
             "id": "chunk_001",
             "score": 0.92,
             "document": "Employees receive 15 days annual leave.",
-            "metadata": {"doc_id": "handbook_2025", "title": "HR Handbook", "deprecated": False},
+            "metadata": {"doc_id": "handbook_2025", "title": "HR Handbook", "deprecated_flag": False},
             "strategy": "hybrid",
         }
     ]
@@ -44,7 +44,7 @@ def make_mock_pipeline():
         "chunking_strategy": "recursive",
     }
     pipeline.list_documents.return_value = [
-        {"doc_id": "handbook_2025", "title": "HR Handbook", "chunk_count": 10, "deprecated": False}
+        {"doc_id": "handbook_2025", "title": "HR Handbook", "chunk_count": 10, "deprecated_flag": False}
     ]
     pipeline.list_chunks.return_value = [
         {"id": "chunk_001", "doc_id": "handbook_2025", "text": "Annual leave policy..."}
@@ -144,7 +144,7 @@ class TestQuery:
         service.query("leave policy", include_deprecated=False)
         call_kwargs = service._mock_pipeline.query.call_args
         filters = call_kwargs[1].get("metadata_filters") or call_kwargs[0][2]
-        assert filters.get("deprecated") is False
+        assert filters.get("deprecated_flag") is False
 
     def test_query_empty_text_still_delegates(self, service):
         # Service does not block empty queries — pipeline handles it

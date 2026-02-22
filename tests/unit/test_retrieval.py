@@ -59,7 +59,6 @@ class TestVectorSimilarityRetrieval:
         self.retriever = VectorSimilarityRetrieval(
             vectorstore=self.vs,
             embedding_model=self.em,
-            config=make_retrieval_config(),
         )
 
     def test_retrieve_returns_list(self):
@@ -110,12 +109,9 @@ class TestBM25Retrieval:
             top_text = results[0].get("document", "")
             assert "annual" in top_text.lower() or "leave" in top_text.lower()
 
-    def test_empty_query_does_not_crash(self):
-        try:
-            results = self.retriever.retrieve("", top_k=3)
-            assert isinstance(results, list)
-        except Exception:
-            pass  # Acceptable: empty query edge case
+    def test_empty_query_raises_value_error(self):
+        with pytest.raises(ValueError):
+            self.retriever.retrieve("", top_k=3)
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +133,7 @@ class TestHybridRetrieval:
             vectorstore=self.vs,
             embedding_model=self.em,
             bm25_index=self.bm25,
-            config=make_retrieval_config(alpha=0.7),
+            alpha=0.7,
         )
 
     def test_retrieve_returns_list(self):
