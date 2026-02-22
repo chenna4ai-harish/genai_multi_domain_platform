@@ -190,30 +190,49 @@ class MetadataConfig(BaseModel):
     )
 
 
+class LLMConfig(BaseModel):
+    """LLM configuration for answer generation."""
+    provider: str = Field(default="gemini", description="LLM provider: gemini, openai")
+    model_name: str = Field(default="gemini-1.5-flash", description="Model identifier")
+    temperature: float = Field(default=0.2, ge=0.0, le=1.0, description="Sampling temperature")
+    max_tokens: int = Field(default=512, ge=64, le=8192, description="Max output tokens")
+    api_key: Optional[str] = Field(default=None, description="API key (from environment)")
+
+    @field_validator('provider')
+    @classmethod
+    def validate_provider(cls, v):
+        allowed = ["gemini", "openai"]
+        if v not in allowed:
+            raise ValueError(f"Invalid LLM provider: {v}. Allowed: {allowed}")
+        return v
+
+
 class DomainConfig(BaseModel):
     """
-    Complete Phase 2 domain configuration schema.
+    Complete domain configuration schema — single source of truth.
 
-    This is the root configuration model that all domain configs must conform to.
-    Validates all required fields and sub-configurations.
+    Every domain YAML must conform to this schema.
+    All fields map 1:1 to keys in configs/domains/<name>.yaml.
     """
     # Identity
     domain_id: str = Field(..., description="Unique domain identifier")
     name: str = Field(..., description="Human-readable domain name")
     description: Optional[str] = Field(default=None, description="Domain description")
 
-    # Component configurations (CRITICAL: Match field names used in code)
+    # Component configurations
     chunking: ChunkingConfig = Field(..., description="Chunking configuration")
     embeddings: EmbeddingConfig = Field(..., description="Embedding configuration")
     retrieval: RetrievalConfig = Field(..., description="Retrieval configuration")
     vectorstore: VectorStoreConfig = Field(..., description="Vector store configuration")
+
+    # LLM for answer generation
+    llm: Optional[LLMConfig] = Field(default_factory=LLMConfig, description="LLM configuration")
 
     # Optional configurations
     security: Optional[SecurityConfig] = Field(default_factory=SecurityConfig)
     metadata: Optional[MetadataConfig] = Field(default_factory=MetadataConfig)
 
     class Config:
-        # Allow extra fields for future extensibility
         extra = "allow"
 
 

@@ -1,0 +1,68 @@
+# =============================================================================
+# configs/domains/hr.yaml
+#
+# Human Resources domain configuration.
+# Inherits global defaults from configs/global_config.yaml and overrides below.
+# =============================================================================
+
+domain_id: hr
+name: Human Resources
+description: "HR policies, employee handbook, leave rules, benefits, and compliance docs"
+
+# ChromaDB collection is named after domain_id
+vectorstore:
+  provider: chromadb
+  collection_name: hr
+  persist_directory: ./data/chromadb/hr
+
+# Chunking: recursive works well for policy documents
+chunking:
+  strategy: recursive
+  recursive:
+    chunk_size: 600
+    overlap: 80
+
+# Embeddings: local sentence-transformers (free, no API key)
+embeddings:
+  provider: sentence_transformers
+  model_name: all-MiniLM-L6-v2
+  device: cpu
+  batch_size: 32
+
+# Retrieval: hybrid (semantic + keyword) is best for policy Q&A
+retrieval:
+  strategies:
+    - hybrid
+  top_k: 10
+  similarity: cosine
+  hybrid:
+    alpha: 0.7
+    normalize_scores: true
+
+# LLM for answer generation
+llm:
+  provider: gemini
+  model_name: gemini-1.5-flash
+  temperature: 0.2
+  max_tokens: 512
+
+# Security
+security:
+  allowed_file_types:
+    - pdf
+    - docx
+    - txt
+  max_file_size_mb: 20
+
+# Metadata
+metadata:
+  track_versions: true
+  enable_deprecation: true
+  compute_file_hash: true
+  extract_page_numbers: true
+  required_fields:
+    - doc_id
+    - title
+    - domain
+    - doc_type
+    - uploader_id

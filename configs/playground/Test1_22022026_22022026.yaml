@@ -1,0 +1,33 @@
+name: Test1_22022026
+description: 'Used just for testing '
+vectorstore:
+  provider: chromadb
+  distance_metric: cosine
+  collection_name: test1
+  persist_directory: ./test1
+chunking:
+  strategy: recursive
+  recursive:
+    chunk_size: 500
+    overlap: 50
+    similarity_threshold: 0.7
+    max_chunk_size: 1000
+embeddings:
+  provider: sentence_transformers
+  model_name: all-MiniLM-L6-v2
+  device: cpu
+  batch_size: 32
+retrieval:
+  strategies:
+  - hybrid
+  top_k: 10
+  hybrid: {}
+llm_rerank:
+  provider: gemini
+  model_name: models/gemini-1.5-pro
+  temperature: 0.2
+  max_tokens: 512
+playground_name: Test1_22022026
+session_id: '22022026'
+created_at: '2026-02-22T18:10:29.704327'
+last_modified: '2026-02-22T18:10:29.704327'

@@ -128,15 +128,6 @@ class ChunkingFactory:
 
     @staticmethod
     def register_strategy(name: str, chunker_class: type):
-        """Register a new chunking strategy."""
-        name = name.lower()
-        if name in ChunkingFactory._available_chunkers:
-            logger.warning(f"Overwriting existing strategy: {name}")
-        ChunkingFactory._available_chunkers[name] = chunker_class.__name__
-        logger.info(f"Registered chunking strategy: {name}")
-
-    @staticmethod
-    def register_strategy(name: str, chunker_class: type):
         """
         Register a new chunking strategy (for extensibility).
 

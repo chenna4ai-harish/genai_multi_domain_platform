@@ -1,0 +1,32 @@
+[
+  {
+    "id": "hr_q1",
+    "question": "How many vacation days do employees get per year?",
+    "expected_doc_ids": ["employee_handbook", "leave_policy"],
+    "expected_keywords": ["vacation", "annual leave", "days", "15"]
+  },
+  {
+    "id": "hr_q2",
+    "question": "What is the process for requesting leave?",
+    "expected_doc_ids": ["leave_policy", "employee_handbook"],
+    "expected_keywords": ["request", "leave", "manager", "approval", "portal"]
+  },
+  {
+    "id": "hr_q3",
+    "question": "How does sick leave work?",
+    "expected_doc_ids": ["leave_policy", "employee_handbook"],
+    "expected_keywords": ["sick", "leave", "medical", "certificate"]
+  },
+  {
+    "id": "hr_q4",
+    "question": "What is the performance review cycle?",
+    "expected_doc_ids": ["performance_policy"],
+    "expected_keywords": ["performance", "review", "annual", "quarterly"]
+  },
+  {
+    "id": "hr_q5",
+    "question": "What are the working hours?",
+    "expected_doc_ids": ["employee_handbook", "work_policy"],
+    "expected_keywords": ["hours", "working", "schedule", "shift"]
+  }
+]

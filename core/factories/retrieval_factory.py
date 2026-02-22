@@ -65,14 +65,6 @@ References:
 
 """
 
-import sys
-from pathlib import Path
-project_root = Path(__file__).parent.parent  # Go up two levels from config_manager.py
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
-
-
 from typing import Dict, Any, Optional
 import logging
 
@@ -233,81 +225,47 @@ class RetrievalFactory:
             strategy_name: str,
             config: Any,
             vectorstore: Any,
-            embedding_model: Any,  # ← MUST BE HERE!
-            bm25_index: Optional[Any] = None
+            embedding_model: Any,
+            bm25_index: Any = None,
     ):
-        """
-        Create retriever based on strategy name.
-
-        Parameters:
-        -----------
-        strategy_name : str
-            Strategy to create ("vector_similarity", "bm25", "hybrid")
-        config : Any
-            Domain configuration object
-        vectorstore : VectorStoreInterface
-            Vector database instance
-        embedding_model : EmbeddingInterface
-            Embedding model (REQUIRED for vector/hybrid strategies)
-        bm25_index : Any, optional
-            BM25 index (required for bm25/hybrid strategies)
-
-        Returns:
-        --------
-        RetrievalInterface:
-            Configured retriever instance
-        """
         strategy_name = strategy_name.lower()
-        logger.info(f"Creating retriever for strategy: {strategy_name}")
 
-        # ===== VECTOR SIMILARITY =====
         if strategy_name == "vector_similarity":
             from core.retrievals.vector_similarity_retrieval import VectorSimilarityRetrieval
-
             return VectorSimilarityRetrieval(
                 vectorstore=vectorstore,
-                embedding_model=embedding_model  # ← PASS THIS!
+                embedding_model=embedding_model,
             )
 
-        # ===== BM25 =====
         elif strategy_name == "bm25":
             from core.retrievals.bm25_retrieval import BM25Retrieval
-
             if bm25_index is None:
                 raise ValueError("BM25 strategy requires bm25_index parameter")
+            return bm25_index  # already a BM25Retrieval instance
 
-            return BM25Retrieval(bm25_index=bm25_index)
-
-        # ===== HYBRID =====
         elif strategy_name == "hybrid":
             from core.retrievals.hybrid_retrieval import HybridRetrieval
-
             if bm25_index is None:
                 raise ValueError("Hybrid strategy requires bm25_index parameter")
 
-            # Get alpha from config
-            retrieval_config = getattr(config, 'retrieval', None)
-            if retrieval_config:
-                hybrid_config = getattr(retrieval_config, 'hybrid', {})
-                if isinstance(hybrid_config, dict):
-                    alpha = hybrid_config.get('alpha', 0.7)
-                else:
-                    alpha = getattr(hybrid_config, 'alpha', 0.7)
-            else:
-                alpha = 0.7
+            retrieval_cfg = getattr(config, "retrieval", None)
+            alpha = 0.7
+            if retrieval_cfg is not None:
+                hybrid_cfg = getattr(retrieval_cfg, "hybrid", None)
+                if isinstance(hybrid_cfg, dict):
+                    alpha = hybrid_cfg.get("alpha", 0.7)
+                elif hybrid_cfg is not None:
+                    alpha = getattr(hybrid_cfg, "alpha", 0.7)
 
             return HybridRetrieval(
                 vectorstore=vectorstore,
-                embedding_model=embedding_model,  # ← PASS THIS!
+                embedding_model=embedding_model,
                 bm25_index=bm25_index,
-                alpha=alpha
+                alpha=alpha,
             )
 
         else:
-            raise ValueError(
-                f"Unknown retrieval strategy: '{strategy_name}'. "
-                f"Available: vector_similarity, bm25, hybrid"
-            )
+            raise ValueError(f"Unknown retrieval strategy: {strategy_name}")
 
     # =========================================================================
     # PRIVATE FACTORY METHODS (Strategy-Specific)

@@ -600,21 +600,79 @@ class DocumentService:
             logger.exception(f"Failed to get document info: {doc_id}")
             raise DocumentNotFoundError(f"Document not found: {doc_id}")
 
+    def deprecate_document(
+        self,
+        doc_id: str,
+        reason: str,
+        superseded_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Mark all chunks of a document as deprecated.
+
+        Parameters:
+        -----------
+        doc_id : str
+            Document identifier to deprecate
+        reason : str
+            Human-readable reason (e.g. "Superseded by handbook_2025")
+        superseded_by : str, optional
+            doc_id of the replacement document
+
+        Returns:
+        --------
+        Dict[str, Any]:
+            Deprecation summary: { doc_id, chunks_deprecated, deprecated_date, reason }
+
+        Raises:
+        -------
+        ValidationError:
+            If doc_id or reason is missing
+        DocumentNotFoundError:
+            If no document found with that doc_id
+        ProcessingError:
+            For other failures
+        """
+        if not doc_id:
+            raise ValidationError("doc_id is required for deprecate_document()")
+        if not reason:
+            raise ValidationError("reason is required for deprecate_document()")
+
+        logger.info(
+            f"Deprecate request: doc_id={doc_id}, domain={self.domain_id}, reason={reason}"
+        )
+
+        try:
+            result = self.pipeline.deprecate_document(
+                doc_id=doc_id,
+                reason=reason,
+                superseded_by=superseded_by,
+            )
+            logger.info(f"✅ Deprecated document: {doc_id} ({result['chunks_deprecated']} chunks)")
+            return result
+
+        except ValueError as e:
+            raise DocumentNotFoundError(str(e))
+
+        except Exception as e:
+            logger.exception(f"Deprecation failed for doc_id={doc_id}")
+            raise ProcessingError(f"Failed to deprecate document: {e}")
+
     def query_with_answer(
         self,
         query_text: str,
-        config: dict | None = None,
+        config: Optional[Dict] = None,
         *,
-        top_k: int | None = None,
-        alpha: float | None = None,
-        llm_provider: str | None = None,
-        llm_model: str | None = None,
-        temperature: float | None = None,
-        max_tokens: int | None = None,
-        filters: dict | None = None,
-    ) -> dict:
+        top_k: Optional[int] = None,
+        strategy: Optional[str] = None,
+        llm_provider: Optional[str] = None,
+        llm_model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+        include_deprecated: bool = False,
+    ) -> Dict[str, Any]:
         """
-        High-level Playground entrypoint.
+        High-level Playground entrypoint: retrieval + LLM answer generation.
 
         Returns:
             {
@@ -627,41 +685,55 @@ class DocumentService:
         if not query_text or not query_text.strip():
             raise ValueError("query_text is required")
 
-        # 1) Build retrieval params (merge config defaults + overrides)
+        # 1) Build retrieval params
         retrieval_cfg = (config or {}).get("retrieval", {})
         effective_top_k = top_k or retrieval_cfg.get("top_k", 5)
-        effective_alpha = alpha if alpha is not None else retrieval_cfg.get("alpha", 0.5)
+        effective_strategy = strategy or retrieval_cfg.get("strategy", None)
 
-        # 2) Run retrieval via pipeline
-        retrieval_result = self.pipeline.query(
+        # 2) Filter deprecated docs unless requested
+        filters = dict(metadata_filters or {})
+        if not include_deprecated:
+            filters.setdefault("deprecated", False)
+
+        # 3) Run retrieval via pipeline (returns List[dict])
+        results: List[Dict[str, Any]] = self.pipeline.query(
             query_text=query_text,
+            strategy_name=effective_strategy,
+            metadata_filters=filters if filters else None,
             top_k=effective_top_k,
-            alpha=effective_alpha,
-            filters=filters or {},
         )
 
-        # Expect something like:
-        # retrieval_result = {
-        #   "results": List[dict],   # each has doc_id, score, text, metadata...
-        #   "timings": {...},
-        #   "strategy": "...",
-        # }
+        # 4) Build context from retrieved chunks
+        context_chunks = [r.get("document", "") for r in results]
 
-        results = retrieval_result.get("results", [])
-        timings = retrieval_result.get("timings", {})
-        strategy = retrieval_result.get("strategy", "default")
+        # 5) Resolve LLM config
+        #    Priority: explicit params > config dict arg > domain config > hardcoded defaults
+        llm_cfg = (config or {}).get("llm", {})
+        domain_llm = getattr(self.domain_config, "llm", None)
+        provider = (
+            llm_provider
+            or llm_cfg.get("provider")
+            or (domain_llm.provider if domain_llm else None)
+            or "gemini"
+        )
+        model = (
+            llm_model
+            or llm_cfg.get("model_name")
+            or (domain_llm.model_name if domain_llm else None)
+            or "gemini-1.5-flash"
+        )
+        temp = (
+            temperature if temperature is not None
+            else llm_cfg.get("temperature")
+            or (domain_llm.temperature if domain_llm else 0.2)
+        )
+        max_toks = (
+            max_tokens
+            or llm_cfg.get("max_tokens")
+            or (domain_llm.max_tokens if domain_llm else 512)
+        )
 
-        # 3) Build LLM request input from results
-        context_chunks = [r.get("text", "") for r in results]
-
-        # 4) Resolve LLM config
-        llm_cfg = (config or {}).get("llm_rerank", {})
-        provider = llm_provider or llm_cfg.get("provider", "openai")
-        model = llm_model or llm_cfg.get("model_name", "gpt-4.1-mini")
-        temp = temperature if temperature is not None else llm_cfg.get("temperature", 0.2)
-        max_toks = max_tokens or llm_cfg.get("max_tokens", 512)
-
-        # 5) Call LLM (you’ll plug into your own LLM client here)
+        # 6) Generate answer with LLM
         answer, confidence = self._generate_answer_with_llm(
             query_text=query_text,
             context_chunks=context_chunks,
@@ -671,28 +743,24 @@ class DocumentService:
             max_tokens=max_toks,
         )
 
-        # 6) Shape sources for UI
+        # 7) Shape sources for UI
         sources = []
         for r in results:
             meta = r.get("metadata", {}) or {}
             sources.append(
                 {
                     "doc_id": meta.get("doc_id"),
-                    "title": meta.get("title") or meta.get("file_name"),
-                    "page": meta.get("page"),
+                    "title": meta.get("title") or meta.get("source_file"),
+                    "page": meta.get("page_num"),
                     "score": float(r.get("score", 0.0)),
-                    "snippet": r.get("text", "")[:400],
+                    "snippet": r.get("document", "")[:400],
                 }
             )
 
-        # 7) Trace for Trace tab
+        # 8) Trace for debugging
         trace = {
-            "strategy": strategy,
-            "params": {
-                "top_k": effective_top_k,
-                "alpha": effective_alpha,
-            },
-            "timings": timings,
+            "strategy": effective_strategy or "all",
+            "params": {"top_k": effective_top_k},
             "raw_results_count": len(results),
         }
 
@@ -702,6 +770,74 @@ class DocumentService:
             "sources": sources,
             "trace": trace,
         }
+
+    def _generate_answer_with_llm(
+        self,
+        query_text: str,
+        context_chunks: List[str],
+        provider: str = "gemini",
+        model: str = "gemini-1.5-flash",
+        temperature: float = 0.2,
+        max_tokens: int = 512,
+    ) -> tuple:
+        """
+        Generate a grounded answer from retrieved context using an LLM.
+
+        Returns (answer: str, confidence: float | None).
+        """
+        context = "\n\n---\n\n".join(context_chunks) if context_chunks else "No context available."
+
+        prompt = (
+            f"You are a helpful assistant. Answer the question using ONLY the context below.\n"
+            f"If the context does not contain the answer, say ‘I don’t have enough information’.\n\n"
+            f"Context:\n{context}\n\n"
+            f"Question: {query_text}\n\n"
+            f"Answer:"
+        )
+
+        try:
+            if provider == "gemini":
+                import google.generativeai as genai
+                import os
+                api_key = os.environ.get("GEMINI_API_KEY")
+                if not api_key:
+                    raise ValueError("GEMINI_API_KEY environment variable not set")
+                genai.configure(api_key=api_key)
+                llm = genai.GenerativeModel(model)
+                response = llm.generate_content(
+                    prompt,
+                    generation_config=genai.GenerationConfig(
+                        temperature=temperature,
+                        max_output_tokens=max_tokens,
+                    ),
+                )
+                answer = response.text.strip()
+                return answer, None
+
+            elif provider == "openai":
+                import openai
+                import os
+                api_key = os.environ.get("OPENAI_API_KEY")
+                if not api_key:
+                    raise ValueError("OPENAI_API_KEY environment variable not set")
+                client = openai.OpenAI(api_key=api_key)
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                answer = response.choices[0].message.content.strip()
+                return answer, None
+
+            else:
+                raise ValueError(
+                    f"Unsupported LLM provider: ‘{provider}’. Supported: gemini, openai"
+                )
+
+        except Exception as e:
+            logger.exception(f"LLM answer generation failed: {e}")
+            return f"[LLM error: {e}]", None
 
     def list_documents(
         self,
@@ -808,19 +944,20 @@ class DocumentService:
         query_text: str,
         *,
         top_k: int = 10,
-        alpha: float = 0.5,
-        filters: dict | None = None,
-    ) -> dict:
+        strategy: Optional[str] = None,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         """
-        Just retrieval, no LLM – for debugging.
+        Retrieval only, no LLM — for debugging and inspection.
+
+        Returns the raw list of retrieved chunks from the pipeline.
         """
-        result = self.pipeline.query(
+        return self.pipeline.query(
             query_text=query_text,
+            strategy_name=strategy,
+            metadata_filters=metadata_filters,
             top_k=top_k,
-            alpha=alpha,
-            filters=filters or {},
         )
-        return result
 
 # =============================================================================
 # USAGE EXAMPLES

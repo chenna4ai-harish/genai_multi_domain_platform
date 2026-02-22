@@ -479,6 +479,28 @@ class BM25Retrieval(RetrievalInterface):
         )
 
 
+    # ------------------------------------------------------------------
+    # Adapter for HybridRetrieval: alias .search(...) to .retrieve(...)
+    # ------------------------------------------------------------------
+    def search(
+        self,
+        query_text: str,
+        top_k: int = 10,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Adapter so HybridRetrieval can call bm25_index.search(...).
+
+        HybridRetrieval passes `filters` where retrieve expects
+        `metadata_filters`, so we just forward the call.
+        """
+        return self.retrieve(
+            query_text=query_text,
+            metadata_filters=filters,
+            top_k=top_k,
+        )
+
+
 # =============================================================================
 # USAGE EXAMPLES
 # =============================================================================
