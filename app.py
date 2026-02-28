@@ -12,6 +12,7 @@ All domain/document management is in app_admin.py.
 
 import gradio as gr
 import logging
+import threading
 from typing import List, Tuple
 from core.config_manager import ConfigManager
 from core.services.document_service import DocumentService
@@ -20,19 +21,29 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Service cache — one DocumentService per domain, reused across requests
+# Module-level ConfigManager — avoids repeated disk I/O on every UI event
+# ---------------------------------------------------------------------------
+_config_manager = ConfigManager()
+
+# ---------------------------------------------------------------------------
+# Service cache — one DocumentService per domain, reused across requests.
+# Lock prevents race conditions when Gradio handles concurrent requests.
 # ---------------------------------------------------------------------------
 _service_cache: dict = {}
+_service_cache_lock = threading.Lock()
 
 
 def _get_service(domain_id: str) -> DocumentService:
     if domain_id not in _service_cache:
-        _service_cache[domain_id] = DocumentService(domain_id)
+        with _service_cache_lock:
+            # Double-checked locking: re-test after acquiring lock
+            if domain_id not in _service_cache:
+                _service_cache[domain_id] = DocumentService(domain_id)
     return _service_cache[domain_id]
 
 
 def _get_domain_choices() -> List[str]:
-    return ConfigManager().get_all_domain_names()
+    return _config_manager.get_all_domain_names()
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +111,7 @@ def on_domain_change(domain_id: str) -> str:
     if not domain_id:
         return ""
     try:
-        cfg = ConfigManager().load_domain_config(domain_id)
+        cfg = _config_manager.load_domain_config(domain_id)
         llm = cfg.llm
         if llm:
             return (

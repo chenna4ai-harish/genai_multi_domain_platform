@@ -85,10 +85,10 @@ def build_tab_templates() -> None:
     templates_table = gr.Dataframe(
         headers=["Template name", "Display name", "Description",
                  "Vector store", "Chunking", "Embeddings"],
-        value=list_templates_table(),
+        value=list_templates_table() or _TEMPLATES_PLACEHOLDER,
         interactive=False,
         wrap=True,
-        row_count=0,
+        row_count=(0, "dynamic"),
     )
 
     gr.Markdown("#### Template details")
@@ -104,7 +104,7 @@ def build_tab_templates() -> None:
     )
 
     refresh_tpl_btn.click(
-        fn=lambda: list_templates_table(),
+        fn=lambda: list_templates_table() or _TEMPLATES_PLACEHOLDER,
         outputs=[templates_table],
     )
 
@@ -125,11 +125,11 @@ def list_domains_table() -> List[List]:
     for d in domains:
         vec_count = _domain_svc.get_domain_vector_count(d["domain_id"])
         rows.append([
-            d["domain_id"],
-            d["name"],
-            d["description"],
-            d["collection_name"],
-            vec_count if vec_count is not None else "—",
+            str(d["domain_id"]),
+            str(d["name"]),
+            str(d["description"]),
+            str(d["collection_name"]),
+            str(vec_count) if vec_count is not None else "—",
             d["created_at"][:10] if d.get("created_at") else "",
         ])
     return rows
@@ -165,7 +165,7 @@ def create_domain_action(
     llm_max_tokens: int,
 ) -> tuple:
     if not domain_id or not template_name:
-        return "⚠️ Domain ID and template are required.", list_domains_table()
+        return "⚠️ Domain ID and template are required.", list_domains_table() or _DOMAINS_PLACEHOLDER
     try:
         result = _domain_svc.create_domain(
             domain_id=domain_id,
@@ -194,9 +194,9 @@ def create_domain_action(
             f"- Vectors: {result['vectors_in_collection']}\n"
             f"- LLM: `{llm_provider} / {llm_model}`"
         )
-        return msg, list_domains_table()
+        return msg, list_domains_table() or _DOMAINS_PLACEHOLDER
     except Exception as e:
-        return f"❌ {e}", list_domains_table()
+        return f"❌ {e}", list_domains_table() or _DOMAINS_PLACEHOLDER
 
 
 def update_llm_models_for_provider(provider: str):
@@ -265,10 +265,10 @@ def build_tab_domains() -> None:
     refresh_domains_btn = gr.Button("🔄 Refresh", size="sm")
     domains_table = gr.Dataframe(
         headers=["Domain ID", "Name", "Description", "Collection", "Vectors", "Created"],
-        value=list_domains_table(),
+        value=list_domains_table() or _DOMAINS_PLACEHOLDER,
         interactive=False,
         wrap=True,
-        row_count=0,
+        row_count=(0, "dynamic"),
     )
 
     # Wire events
@@ -290,7 +290,7 @@ def build_tab_domains() -> None:
         ],
         outputs=[create_status, domains_table],
     )
-    refresh_domains_btn.click(fn=list_domains_table, outputs=[domains_table])
+    refresh_domains_btn.click(fn=lambda: list_domains_table() or _DOMAINS_PLACEHOLDER, outputs=[domains_table])
 
 
 # ===========================================================================
@@ -299,6 +299,13 @@ def build_tab_domains() -> None:
 
 def get_domain_list() -> List[str]:
     return _config_mgr.get_all_domain_names()
+
+
+_METRICS_PLACEHOLDER  = [["—", "—"]]
+_DOCS_PLACEHOLDER     = [["—", "—", "—", "—", "—", "—"]]
+_CHUNKS_PLACEHOLDER   = [["—", "—", "—"]]
+_DOMAINS_PLACEHOLDER  = [["—", "—", "—", "—", "—", "—"]]
+_TEMPLATES_PLACEHOLDER = [["—", "—", "—", "—", "—", "—"]]
 
 
 def on_upload_document(
@@ -310,9 +317,9 @@ def on_upload_document(
     replace_existing: bool,
 ) -> tuple:
     if not domain_id:
-        return "⚠️ Select a domain first.", []
+        return "⚠️ Select a domain first.", _METRICS_PLACEHOLDER
     if file is None:
-        return "⚠️ Select a file.", []
+        return "⚠️ Select a file.", _METRICS_PLACEHOLDER
     try:
         svc = _get_doc_service(domain_id)
         doc_id = f"{Path(file.name).stem}_{int(datetime.now().timestamp())}"
@@ -328,12 +335,12 @@ def on_upload_document(
             replace_existing=replace_existing,
         )
         rows = [
-            ["Document ID", result.get("doc_id", doc_id)],
-            ["Chunks ingested", result.get("chunks_ingested", 0)],
-            ["Embedding model", result.get("embedding_model", "N/A")],
-            ["Chunking strategy", result.get("chunking_strategy", "N/A")],
-            ["File hash", result.get("file_hash", "N/A")[:16] + "..."],
-            ["Status", result.get("status", "success")],
+            ["Document ID",       str(result.get("doc_id", doc_id))],
+            ["Chunks ingested",   str(result.get("chunks_ingested", 0))],
+            ["Embedding model",   str(result.get("embedding_model", "N/A"))],
+            ["Chunking strategy", str(result.get("chunking_strategy", "N/A"))],
+            ["File hash",         str(result.get("file_hash", "N/A"))[:16] + "..."],
+            ["Status",            str(result.get("status", "success"))],
         ]
         return (
             f"✅ Uploaded `{Path(file.name).name}` — "
@@ -341,41 +348,41 @@ def on_upload_document(
             rows,
         )
     except Exception as e:
-        return f"❌ {e}", []
+        return f"❌ {e}", _METRICS_PLACEHOLDER
 
 
 def on_refresh_documents(domain_id: str) -> tuple:
     if not domain_id:
-        return "⚠️ Select a domain.", []
+        return "⚠️ Select a domain.", _DOCS_PLACEHOLDER
     try:
         svc = _get_doc_service(domain_id)
         docs = svc.list_documents(filters={"deprecated_flag": False})
         rows = [
             [
-                d.get("doc_id"),
-                d.get("title"),
-                d.get("doc_type"),
-                d.get("uploader_id"),
-                d.get("chunk_count"),
-                d.get("last_seen"),
+                str(d.get("doc_id") or ""),
+                str(d.get("title") or ""),
+                str(d.get("doc_type") or ""),
+                str(d.get("uploader_id") or ""),
+                str(d.get("chunk_count") or ""),
+                str(d.get("last_seen") or ""),
             ]
             for d in docs
         ]
         status = f"✅ {len(rows)} document(s) in `{domain_id}`." if rows else f"ℹ️ No documents in `{domain_id}`."
-        return status, rows
+        return status, rows if rows else _DOCS_PLACEHOLDER
     except Exception as e:
-        return f"❌ {e}", []
+        return f"❌ {e}", _DOCS_PLACEHOLDER
 
 
 def on_select_document(evt: gr.SelectData, docs_data: List, domain_id: str) -> tuple:
     if not docs_data or evt.index is None:
-        return "", [], ""
+        return "", _CHUNKS_PLACEHOLDER, ""
     idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
     if idx >= len(docs_data):
-        return "", [], ""
+        return "", _CHUNKS_PLACEHOLDER, ""
     doc_id = docs_data[idx][0]
     if not domain_id or not doc_id:
-        return doc_id, [], ""
+        return str(doc_id or ""), _CHUNKS_PLACEHOLDER, ""
     try:
         svc = _get_doc_service(domain_id)
         chunks = svc.list_chunks(doc_id=doc_id, limit=200)
@@ -383,22 +390,26 @@ def on_select_document(evt: gr.SelectData, docs_data: List, domain_id: str) -> t
         for c in chunks:
             md = c.get("metadata", {}) or {}
             snippet = c.get("text", "")[:200].replace("\n", " ")
-            chunk_rows.append([c.get("id"), md.get("page_num"), snippet])
+            chunk_rows.append([
+                str(c.get("id") or ""),
+                str(md.get("page_num") or ""),
+                snippet,
+            ])
         status = f"✅ {len(chunk_rows)} chunks for `{doc_id}`."
-        return doc_id, chunk_rows, status
+        return str(doc_id), chunk_rows if chunk_rows else _CHUNKS_PLACEHOLDER, status
     except Exception as e:
-        return doc_id, [], f"❌ {e}"
+        return str(doc_id), _CHUNKS_PLACEHOLDER, f"❌ {e}"
 
 
 def on_delete_document(domain_id: str, doc_id: str) -> tuple:
     if not domain_id or not doc_id.strip():
-        return "⚠️ Select a domain and enter a document ID.", []
+        return "⚠️ Select a domain and enter a document ID.", _DOCS_PLACEHOLDER
     try:
         svc = _get_doc_service(domain_id)
         svc.delete_document(doc_id.strip())
         return f"✅ Deleted `{doc_id}`.", on_refresh_documents(domain_id)[1]
     except Exception as e:
-        return f"❌ {e}", []
+        return f"❌ {e}", _DOCS_PLACEHOLDER
 
 
 def build_tab_documents() -> None:
@@ -412,54 +423,55 @@ def build_tab_documents() -> None:
     )
     refresh_domain_btn = gr.Button("🔄 Refresh domains", size="sm")
 
-    with gr.Tab("Upload"):
-        upload_file = gr.File(
-            label="Document (.pdf, .docx, .txt)",
-            file_count="single",
-        )
-        with gr.Row():
-            upload_title = gr.Textbox(label="Title", placeholder="Optional")
-            upload_doc_type = gr.Textbox(label="Doc type", placeholder="policy / faq / manual")
-        with gr.Row():
-            upload_uploader = gr.Textbox(label="Uploader ID", placeholder="your@email.com")
-            upload_replace = gr.Checkbox(label="Replace if doc_id already exists", value=True)
-        upload_btn = gr.Button("⬆️ Upload & Ingest", variant="primary")
-        upload_status = gr.Markdown("")
-        upload_metrics = gr.Dataframe(
-            headers=["Metric", "Value"],
-            value=[],
-            interactive=False,
-            row_count=0,
-        )
-
-    with gr.Tab("Browse & Delete"):
-        refresh_docs_btn = gr.Button("🔄 Refresh documents", size="sm")
-        docs_status = gr.Markdown("")
-        docs_table = gr.Dataframe(
-            headers=["doc_id", "title", "doc_type", "uploader", "chunks", "last_seen"],
-            value=[],
-            interactive=False,
-            wrap=True,
-            row_count=0,
-        )
-        gr.Markdown("**Chunks for selected document:**")
-        chunks_table = gr.Dataframe(
-            headers=["chunk_id", "page", "snippet"],
-            value=[],
-            interactive=False,
-            wrap=True,
-            row_count=0,
-        )
-        chunks_status = gr.Markdown("")
-
-        gr.Markdown("**Delete a document:**")
-        with gr.Row():
-            delete_doc_id = gr.Textbox(
-                label="Document ID to delete",
-                placeholder="Paste doc_id from the table above",
+    with gr.Tabs():
+        with gr.Tab("Upload"):
+            upload_file = gr.File(
+                label="Document (.pdf, .docx, .txt)",
+                file_count="single",
             )
-            delete_btn = gr.Button("🗑 Delete", variant="stop")
-        delete_status = gr.Markdown("")
+            with gr.Row():
+                upload_title = gr.Textbox(label="Title", placeholder="Optional")
+                upload_doc_type = gr.Textbox(label="Doc type", placeholder="policy / faq / manual")
+            with gr.Row():
+                upload_uploader = gr.Textbox(label="Uploader ID", placeholder="your@email.com")
+                upload_replace = gr.Checkbox(label="Replace if doc_id already exists", value=True)
+            upload_btn = gr.Button("⬆️ Upload & Ingest", variant="primary")
+            upload_status = gr.Markdown("")
+            upload_metrics = gr.Dataframe(
+                headers=["Metric", "Value"],
+                value=_METRICS_PLACEHOLDER,
+                interactive=False,
+                row_count=(0, "dynamic"),
+            )
+
+        with gr.Tab("Browse & Delete"):
+            refresh_docs_btn = gr.Button("🔄 Refresh documents", size="sm")
+            docs_status = gr.Markdown("")
+            docs_table = gr.Dataframe(
+                headers=["doc_id", "title", "doc_type", "uploader", "chunks", "last_seen"],
+                value=_DOCS_PLACEHOLDER,
+                interactive=False,
+                wrap=True,
+                row_count=(0, "dynamic"),
+            )
+            gr.Markdown("**Chunks for selected document:**")
+            chunks_table = gr.Dataframe(
+                headers=["chunk_id", "page", "snippet"],
+                value=_CHUNKS_PLACEHOLDER,
+                interactive=False,
+                wrap=True,
+                row_count=(0, "dynamic"),
+            )
+            chunks_status = gr.Markdown("")
+
+            gr.Markdown("**Delete a document:**")
+            with gr.Row():
+                delete_doc_id = gr.Textbox(
+                    label="Document ID to delete",
+                    placeholder="Paste doc_id from the table above",
+                )
+                delete_btn = gr.Button("🗑 Delete", variant="stop")
+            delete_status = gr.Markdown("")
 
     # Wire
     refresh_domain_btn.click(
@@ -492,6 +504,49 @@ def build_tab_documents() -> None:
 # ===========================================================================
 # TAB 4 — PLAYGROUND (RAG config tuner)
 # ===========================================================================
+
+def _pg_load_config(config_name: str):
+    """Load a saved playground config and populate all form fields."""
+    if not config_name:
+        return (gr.update(),) * 20
+    try:
+        pg_filename = PlaygroundConfigManager.find_config_by_name(config_name)
+        if not pg_filename:
+            return (gr.update(),) * 20
+        cfg = PlaygroundConfigManager.load_config(pg_filename)
+        vs  = cfg.get("vectorstore", {}) or {}
+        ch  = cfg.get("chunking", {}) or {}
+        ch_strat = ch.get("strategy", "recursive")
+        ch_sub   = ch.get(ch_strat, {}) or {}
+        emb = cfg.get("embeddings", {}) or {}
+        ret = cfg.get("retrieval", {}) or {}
+        llm = cfg.get("llm", {}) or {}
+        return (
+            gr.update(value=cfg.get("name", "")),
+            gr.update(value=cfg.get("description", "")),
+            gr.update(value=vs.get("provider")),
+            gr.update(value=vs.get("distance_metric")),
+            gr.update(value=vs.get("collection_name", "")),
+            gr.update(value=vs.get("persist_directory", "")),
+            gr.update(value=ch_strat),
+            gr.update(value=ch_sub.get("chunk_size", 500)),
+            gr.update(value=ch_sub.get("overlap", 50)),
+            gr.update(value=emb.get("provider")),
+            gr.update(value=emb.get("model_name")),
+            gr.update(value=emb.get("device", "cpu")),
+            gr.update(value=emb.get("batch_size", 32)),
+            gr.update(value=ret.get("strategies", [])),
+            gr.update(value=ret.get("top_k", 10)),
+            gr.update(value=(ret.get("hybrid") or {}).get("alpha", 0.5)),
+            gr.update(value=llm.get("provider")),
+            gr.update(value=llm.get("model_name")),
+            gr.update(value=llm.get("temperature", 0.2)),
+            gr.update(value=llm.get("max_tokens", 512)),
+        )
+    except Exception as e:
+        logger.error(f"Failed to load playground config: {e}")
+        return (gr.update(),) * 20
+
 
 def _pg_save_config(
     config_name, config_desc, vectorstore, distance_metric, collection_name,
@@ -527,9 +582,9 @@ def _pg_save_config(
             "batch_size": batch_size,
         },
         "retrieval": {
-            "strategies": retrieval_strategies,
+            "strategies": retrieval_strategies or [],
             "top_k": top_k,
-            "hybrid": {"alpha": hybrid_alpha} if "hybrid" in retrieval_strategies else {},
+            "hybrid": {"alpha": hybrid_alpha} if retrieval_strategies and "hybrid" in retrieval_strategies else {},
         },
         "llm": {
             "provider": llm_provider,
@@ -565,14 +620,14 @@ def _pg_save_as_template(template_name: str, config_name: str, session_id: str):
 def _pg_run_query(query_text: str, config_name: str, session_id: str):
     """Run a test query using a playground config."""
     if not query_text:
-        return "—", [], ""
+        return "—", _CHUNKS_PLACEHOLDER, ""
     if not config_name:
-        return "⚠️ Load a config first.", [], ""
+        return "⚠️ Load a config first.", _CHUNKS_PLACEHOLDER, ""
     try:
         from core.playground_config_manager import PlaygroundConfigManager as PCM
         pg_filename = PCM.find_config_by_name(config_name)
         if not pg_filename:
-            return f"❌ Config '{config_name}' not found.", [], ""
+            return f"❌ Config '{config_name}' not found.", _CHUNKS_PLACEHOLDER, ""
         pg_cfg = PCM.load_config(pg_filename)
         pg_mgr = PlaygroundConfigManager()
         merged = pg_mgr.merge_with_global(pg_cfg)
@@ -586,20 +641,26 @@ def _pg_run_query(query_text: str, config_name: str, session_id: str):
         temp_name = f"{synth_id}_playground_temp"
         temp_file = Path("configs/domains") / f"{temp_name}.yaml"
         if not temp_file.exists():
-            import yaml as _yaml
             d = domain_cfg.model_dump() if hasattr(domain_cfg, "model_dump") else domain_cfg.dict()
             with open(temp_file, "w") as f:
-                _yaml.safe_dump(d, f)
+                yaml.safe_dump(d, f)
 
         svc = DocumentService(temp_name)
         result = svc.query_with_answer(query_text=query_text)
         answer = result["answer"]
         sources = result["sources"]
-        rows = [[s.get("doc_id"), s.get("score"), s.get("snippet", "")[:200]] for s in sources]
-        return answer, rows, f"✅ Strategy: {result['trace'].get('strategy')}"
+        rows = [
+            [
+                str(s.get("doc_id") or ""),
+                str(round(s.get("score", 0.0), 4)),
+                str(s.get("snippet", "")[:200]),
+            ]
+            for s in sources
+        ]
+        return answer, rows if rows else _CHUNKS_PLACEHOLDER, f"✅ Strategy: {result['trace'].get('strategy')}"
     except Exception as e:
         logger.exception(e)
-        return f"❌ {e}", [], ""
+        return f"❌ {e}", _CHUNKS_PLACEHOLDER, ""
 
 
 def build_tab_playground() -> None:
@@ -653,39 +714,40 @@ def build_tab_playground() -> None:
             pg_config_name = gr.Textbox(label="Config name", placeholder="MyConfig_v1")
             pg_config_desc = gr.Textbox(label="Description", lines=2)
 
-            with gr.Tab("Vector Store"):
-                pg_vs = gr.Dropdown(vectorstore_providers, label="Provider", value=default_vs)
-                pg_dm = gr.Dropdown(distance_metrics, label="Distance metric", value=default_dm)
-                pg_col = gr.Textbox(label="Collection name")
-                pg_persist = gr.Textbox(label="Persist directory")
+            with gr.Tabs():
+                with gr.Tab("Vector Store"):
+                    pg_vs = gr.Dropdown(vectorstore_providers, label="Provider", value=default_vs)
+                    pg_dm = gr.Dropdown(distance_metrics, label="Distance metric", value=default_dm)
+                    pg_col = gr.Textbox(label="Collection name")
+                    pg_persist = gr.Textbox(label="Persist directory")
 
-            with gr.Tab("Chunking"):
-                pg_cs = gr.Dropdown(chunking_strategies, label="Strategy", value=default_cs)
-                pg_chunk_size = gr.Slider(100, 2000, value=500, step=50, label="Chunk size")
-                pg_overlap = gr.Slider(0, 200, value=50, step=10, label="Overlap")
-                pg_sim_thresh = gr.Slider(0.0, 1.0, value=0.7, step=0.01,
-                                          label="Similarity threshold", visible=False)
-                pg_max_chunk = gr.Slider(500, 3000, value=1000, step=50,
-                                         label="Max chunk size", visible=False)
+                with gr.Tab("Chunking"):
+                    pg_cs = gr.Dropdown(chunking_strategies, label="Strategy", value=default_cs)
+                    pg_chunk_size = gr.Slider(100, 2000, value=500, step=50, label="Chunk size")
+                    pg_overlap = gr.Slider(0, 200, value=50, step=10, label="Overlap")
+                    pg_sim_thresh = gr.Slider(0.0, 1.0, value=0.7, step=0.01,
+                                              label="Similarity threshold", visible=False)
+                    pg_max_chunk = gr.Slider(500, 3000, value=1000, step=50,
+                                             label="Max chunk size", visible=False)
 
-            with gr.Tab("Embeddings"):
-                pg_ep = gr.Dropdown(provider_choices, label="Provider", value=default_ep)
-                pg_em = gr.Dropdown(default_em_list, label="Model", value=default_em)
-                pg_dev = gr.Dropdown(device_options, label="Device", value=default_dev)
-                pg_batch = gr.Slider(1, 256, value=32, step=1, label="Batch size")
+                with gr.Tab("Embeddings"):
+                    pg_ep = gr.Dropdown(provider_choices, label="Provider", value=default_ep)
+                    pg_em = gr.Dropdown(default_em_list, label="Model", value=default_em)
+                    pg_dev = gr.Dropdown(device_options, label="Device", value=default_dev)
+                    pg_batch = gr.Slider(1, 256, value=32, step=1, label="Batch size")
 
-            with gr.Tab("Retrieval"):
-                pg_rs = gr.CheckboxGroup(
-                    retrieval_strategies_options, label="Strategies", value=default_rs
-                )
-                pg_topk = gr.Slider(1, 50, value=10, step=1, label="Top K")
-                pg_alpha = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="Hybrid α")
+                with gr.Tab("Retrieval"):
+                    pg_rs = gr.CheckboxGroup(
+                        retrieval_strategies_options, label="Strategies", value=default_rs
+                    )
+                    pg_topk = gr.Slider(1, 50, value=10, step=1, label="Top K")
+                    pg_alpha = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="Hybrid α")
 
-            with gr.Tab("LLM"):
-                pg_lp = gr.Dropdown(llm_provider_choices, label="Provider", value=default_lp)
-                pg_lm = gr.Dropdown(default_lm_list, label="Model", value=default_lm)
-                pg_temp = gr.Slider(0.0, 1.0, value=0.2, step=0.01, label="Temperature")
-                pg_maxtok = gr.Slider(128, 4096, value=512, step=64, label="Max tokens")
+                with gr.Tab("LLM"):
+                    pg_lp = gr.Dropdown(llm_provider_choices, label="Provider", value=default_lp)
+                    pg_lm = gr.Dropdown(default_lm_list, label="Model", value=default_lm)
+                    pg_temp = gr.Slider(0.0, 1.0, value=0.2, step=0.01, label="Temperature")
+                    pg_maxtok = gr.Slider(128, 4096, value=512, step=64, label="Max tokens")
 
         # RIGHT: test
         with gr.Column(scale=1):
@@ -695,8 +757,9 @@ def build_tab_playground() -> None:
             pg_answer = gr.Markdown(label="Answer")
             pg_chunks_df = gr.Dataframe(
                 headers=["doc_id", "score", "snippet"],
+                value=_CHUNKS_PLACEHOLDER,
                 interactive=False,
-                row_count=0,
+                row_count=(0, "dynamic"),
                 label="Retrieved chunks",
             )
             pg_run_status = gr.Markdown("")
@@ -732,6 +795,18 @@ def build_tab_playground() -> None:
         _update_chunk_visibility,
         inputs=[pg_cs],
         outputs=[pg_chunk_size, pg_overlap, pg_sim_thresh, pg_max_chunk],
+    )
+
+    load_btn.click(
+        fn=_pg_load_config,
+        inputs=[config_selector],
+        outputs=[
+            pg_config_name, pg_config_desc, pg_vs, pg_dm, pg_col, pg_persist,
+            pg_cs, pg_chunk_size, pg_overlap,
+            pg_ep, pg_em, pg_dev, pg_batch,
+            pg_rs, pg_topk, pg_alpha,
+            pg_lp, pg_lm, pg_temp, pg_maxtok,
+        ],
     )
 
     save_btn.click(
@@ -793,4 +868,5 @@ def build_admin_app() -> gr.Blocks:
 
 if __name__ == "__main__":
     app = build_admin_app()
+    app.queue()
     app.launch(server_name="127.0.0.1", server_port=7861, show_error=True)

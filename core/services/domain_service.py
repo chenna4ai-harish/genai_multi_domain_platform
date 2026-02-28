@@ -164,7 +164,7 @@ class DomainService:
             from core.services.document_service import DocumentService
             svc = DocumentService(domain_id)
             # collection.count() confirms the collection was created
-            vector_count = svc.pipeline.vectorstore.collection.count()
+            vector_count = svc.pipeline.vectorstore.count()
             logger.info(
                 f"✅ Domain '{domain_id}' created — "
                 f"ChromaDB collection '{domain_id}' initialized "
@@ -226,7 +226,7 @@ class DomainService:
         try:
             from core.services.document_service import DocumentService
             svc = DocumentService(domain_id)
-            return svc.pipeline.vectorstore.collection.count()
+            return svc.pipeline.vectorstore.count()
         except Exception as e:
             logger.warning(f"Could not get vector count for '{domain_id}': {e}")
             return None

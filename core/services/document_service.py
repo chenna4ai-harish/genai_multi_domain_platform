@@ -96,6 +96,8 @@ References:
 
 import logging
 import hashlib
+import tempfile
+import shutil
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from pathlib import Path
@@ -105,7 +107,9 @@ from core.pipeline.document_pipeline import DocumentPipeline
 from core.config_manager import ConfigManager
 
 # File processing utilities
-from core.utils.file_parsers import extract_text_from_file
+from core.utils.file_parsers.parser_factory import extract_text_from_file
+from core.utils.validation import validate_file_type
+from core.utils.hashing import compute_file_hash
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -291,13 +295,14 @@ class DocumentService:
         ValidationError:
             If required fields missing or empty
         """
-        # Phase 2 required fields (from spec Section 4.2)
-        required_fields = [
-            "doc_id",
-            "title",
-            "doc_type",
-            "uploader_id"
-        ]
+        # Derive required fields from domain config, excluding 'domain'
+        # (that field is auto-injected by the service, not supplied by the caller)
+        metadata_config = getattr(self.domain_config, 'metadata', None)
+        config_fields = getattr(metadata_config, 'required_fields', None) if metadata_config else None
+        if config_fields:
+            required_fields = [f for f in config_fields if f != 'domain']
+        else:
+            required_fields = ["doc_id", "title", "doc_type", "uploader_id"]
 
         missing = []
         empty = []
@@ -366,11 +371,6 @@ class DocumentService:
         5. Process via pipeline
         6. Cleanup temp file
         """
-        from pathlib import Path
-        import tempfile
-        import shutil
-        from datetime import datetime
-
         logger.info(f"Upload request: doc_id={metadata.get('doc_id')}, domain={self.domain_id}")
 
         # Get filename from file object
@@ -378,8 +378,10 @@ class DocumentService:
         if not filename:
             raise ValidationError("File object missing 'name' attribute")
 
+        # Validate metadata required fields (fail fast, before any file I/O)
+        self._validate_metadata(metadata)
+
         # Validate file type
-        from core.utils.validation import validate_file_type
         validate_file_type(filename, self.allowed_file_types)
         logger.debug(f"✅ File type validated: {filename}")
 
@@ -394,9 +396,7 @@ class DocumentService:
 
             logger.debug(f"Saved temporary file: {tmp_path}")
 
-            # Step 2: Extract text using parser_factory
-            from core.utils.file_parsers.parser_factory import extract_text_from_file
-
+            # Step 2: Extract text
             text = extract_text_from_file(tmp_path)
             logger.info(f"✅ Extracted {len(text)} characters from {filename}")
 
@@ -405,7 +405,6 @@ class DocumentService:
 
             # Step 3: Compute file hash
             file_obj.seek(0)  # Reset again for hashing
-            from core.utils.hashing import compute_file_hash
             file_hash = compute_file_hash(file_obj)
             logger.debug(f"Computed file hash: {file_hash[:16]}...")
 
@@ -722,16 +721,24 @@ class DocumentService:
             or (domain_llm.model_name if domain_llm else None)
             or "gemini-1.5-flash"
         )
-        temp = (
-            temperature if temperature is not None
-            else llm_cfg.get("temperature")
-            or (domain_llm.temperature if domain_llm else 0.2)
-        )
-        max_toks = (
-            max_tokens
-            or llm_cfg.get("max_tokens")
-            or (domain_llm.max_tokens if domain_llm else 512)
-        )
+        # Use explicit None checks to avoid treating 0.0 / 0 as falsy
+        if temperature is not None:
+            temp = temperature
+        elif llm_cfg.get("temperature") is not None:
+            temp = llm_cfg["temperature"]
+        elif domain_llm is not None:
+            temp = domain_llm.temperature
+        else:
+            temp = 0.2
+
+        if max_tokens is not None:
+            max_toks = max_tokens
+        elif llm_cfg.get("max_tokens") is not None:
+            max_toks = llm_cfg["max_tokens"]
+        elif domain_llm is not None:
+            max_toks = domain_llm.max_tokens
+        else:
+            max_toks = 512
 
         # 6) Generate answer with LLM
         answer, confidence = self._generate_answer_with_llm(

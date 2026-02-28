@@ -85,6 +85,7 @@ References:
 """
 
 import logging
+import numpy as np
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 
@@ -100,7 +101,6 @@ from core.interfaces.embedding_interface import EmbeddingInterface
 from core.interfaces.vectorstore_interface import VectorStoreInterface
 from core.interfaces.retrieval_interface import RetrievalInterface
 from models.metadata_models import ChunkMetadata
-from core.retrievals.bm25_retrieval import BM25Retrieval  # add at top of file
 
 
 # Configure logging
@@ -228,27 +228,22 @@ class DocumentPipeline:
             logger.warning("No retrieval config found, using default vector_similarity")
             strategies = ["vector_similarity"]
         else:
-            strategies = getattr(retrieval_config, 'strategies', ["vector_similarity"])
+            strategies = list(getattr(retrieval_config, 'strategies', ["vector_similarity"]))
             if isinstance(strategies, str):
                 strategies = [strategies]
 
         logger.info(f"Initializing retrieval strategies: {strategies}")
 
-        # Check if vector store is empty; if so, skip BM25/hybrid (need corpus)
-        if hasattr(self.vectorstore, 'get_all_documents'):
-            try:
-                corpus, doc_ids = self.vectorstore.get_all_documents()
-                corpus_size = len(corpus)
-                logger.info(f"Vector store corpus size: {corpus_size} documents")
-
-                if corpus_size == 0:
-                    logger.warning("Vector store is empty — skipping BM25/hybrid strategies.")
-                    strategies = [s for s in strategies if s not in ['bm25', 'hybrid']]
-                    if not strategies:
-                        strategies = ['vector_similarity']
-
-            except Exception as e:
-                logger.warning(f"Could not check corpus size: {e}")
+        # Skip BM25/hybrid when the corpus is empty (factory would raise anyway,
+        # but we skip early to avoid a noisy error log on a fresh domain).
+        try:
+            if self.vectorstore.count() == 0:
+                logger.warning("Vector store is empty — skipping BM25/hybrid strategies.")
+                strategies = [s for s in strategies if s not in ('bm25', 'hybrid')]
+                if not strategies:
+                    strategies = ['vector_similarity']
+        except Exception as e:
+            logger.warning(f"Could not check corpus size: {e}")
 
         retrievers: Dict[str, RetrievalInterface] = {}
         failed_strategies = []
@@ -256,38 +251,13 @@ class DocumentPipeline:
         for strategy_name in strategies:
             try:
                 logger.debug(f"Creating retriever for strategy: {strategy_name}")
-
-                bm25_index = None
-
-                # Build BM25 index only for bm25 / hybrid strategies
-                if strategy_name in ["bm25", "hybrid"]:
-                    if hasattr(self.vectorstore, "get_all_documents"):
-                        metadata = None
-                        if hasattr(self.vectorstore, "get_all_documents_with_metadata"):
-                            corpus, doc_ids, metadata = self.vectorstore.get_all_documents_with_metadata()
-                        else:
-                            corpus, doc_ids = self.vectorstore.get_all_documents()
-                        if not corpus:
-                            raise ValueError("Cannot build BM25 index: corpus is empty")
-                        bm25_index = BM25Retrieval(corpus=corpus, doc_ids=doc_ids, metadata=metadata)
-                        logger.info(
-                            f"✅ BM25 index built for '{strategy_name}' "
-                            f"with {len(corpus)} docs"
-                        )
-                    else:
-                        raise ValueError(
-                            "Vector store does not support get_all_documents; "
-                            "required for bm25/hybrid"
-                        )
-
+                # BM25 index building is now fully inside RetrievalFactory
                 retriever = RetrievalFactory.create_retriever(
                     strategy_name=strategy_name,
                     config=self.config,
                     vectorstore=self.vectorstore,
                     embedding_model=self.embedding_model,
-                    bm25_index=bm25_index,
                 )
-
                 retrievers[strategy_name] = retriever
                 logger.info(f"✅ Loaded retrieval strategy: {strategy_name}")
 
@@ -307,7 +277,6 @@ class DocumentPipeline:
                     config=self.config,
                     vectorstore=self.vectorstore,
                     embedding_model=self.embedding_model,
-                    bm25_index=None,
                 )
                 retrievers["vector_similarity"] = retriever
                 logger.info("✅ Fallback to vector_similarity successful")
@@ -322,6 +291,22 @@ class DocumentPipeline:
             logger.warning(f"Some strategies failed: {[s for s, _ in failed_strategies]}")
 
         return retrievers
+
+    def _refresh_retrieval_strategies(self) -> None:
+        """
+        Rebuild all retrieval strategies after the corpus changes (upload or delete).
+
+        The BM25 / hybrid indexes are built from a snapshot of the vector store
+        at init time.  Call this after any write operation so that all strategies
+        reflect the current corpus.
+        """
+        logger.info(f"Refreshing retrieval strategies for domain: {self.domain_id}")
+        self.retrieval_strategies = self._init_retrieval_strategies()
+        logger.info(
+            f"✅ Retrieval strategies refreshed "
+            f"({len(self.retrieval_strategies)} active: "
+            f"{list(self.retrieval_strategies.keys())})"
+        )
 
 
     def process_document(
@@ -447,7 +432,6 @@ class DocumentPipeline:
 
         # Step 4: Embed chunks
         logger.info(f"Embedding {len(chunk_texts)} chunks...")
-        import numpy as np
         embeddings: np.ndarray = self.embedding_model.embed_texts(chunk_texts)
 
         logger.info(f"✅ Generated embeddings: shape={embeddings.shape}")
@@ -462,7 +446,10 @@ class DocumentPipeline:
 
         logger.info(f"✅ Successfully upserted {len(chunks)} chunks for doc_id: {doc_id}")
 
-        # Step 7: Return summary
+        # Step 7: Refresh BM25/hybrid indexes so the new chunks are searchable
+        self._refresh_retrieval_strategies()
+
+        # Step 8: Return summary
         return {
             "doc_id": doc_id,
             "chunks_ingested": len(chunks),
@@ -646,47 +633,25 @@ class DocumentPipeline:
         """
         logger.info(f"Deprecating document: doc_id={doc_id}, reason={reason}")
 
-        collection = getattr(self.vectorstore, "collection", None)
-        if collection is None:
-            raise NotImplementedError(
-                "Vector store has no 'collection' handle; cannot update chunk metadata."
-            )
-
-        # Fetch all chunk IDs for this document
-        results = collection.get(
-            where={"doc_id": doc_id},
-            include=["metadatas"],
-        )
-
-        ids = results.get("ids") or []
-        if not ids:
-            raise ValueError(f"No document found with doc_id='{doc_id}'")
-
         deprecated_date = datetime.utcnow().isoformat()
 
-        # Build the metadata update for each chunk
-        updated_metadata = {
+        updates = {
             "deprecated_flag": True,
             "deprecated_date": deprecated_date,
             "deprecation_reason": reason,
         }
         if superseded_by:
-            updated_metadata["superseded_by_chunk_id"] = superseded_by
+            updates["superseded_by_chunk_id"] = superseded_by
 
-        # ChromaDB update: merge updated fields into existing metadata
-        existing_metadatas = results.get("metadatas") or [{}] * len(ids)
-        merged_metadatas = []
-        for md in existing_metadatas:
-            merged = dict(md or {})
-            merged.update(updated_metadata)
-            merged_metadatas.append(merged)
+        # Delegate to the VectorStoreInterface — no direct collection access
+        count = self.vectorstore.update_document_metadata(doc_id, updates)
+        if count == 0:
+            raise ValueError(f"No document found with doc_id='{doc_id}'")
 
-        collection.update(ids=ids, metadatas=merged_metadatas)
-
-        logger.info(f"✅ Deprecated {len(ids)} chunks for doc_id={doc_id}")
+        logger.info(f"✅ Deprecated {count} chunks for doc_id={doc_id}")
         return {
             "doc_id": doc_id,
-            "chunks_deprecated": len(ids),
+            "chunks_deprecated": count,
             "deprecated_date": deprecated_date,
             "reason": reason,
             "superseded_by": superseded_by,
@@ -708,6 +673,9 @@ class DocumentPipeline:
         logger.info(f"Deleting document: {doc_id}")
         self.vectorstore.delete_by_doc_id(doc_id)
         logger.info(f"✅ Deleted all chunks for doc_id: {doc_id}")
+
+        # Refresh retrieval strategies so deleted chunks are excluded from BM25
+        self._refresh_retrieval_strategies()
 
     def get_document_info(self, doc_id: str) -> Dict[str, Any]:
         """

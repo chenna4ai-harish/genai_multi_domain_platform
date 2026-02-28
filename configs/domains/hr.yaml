@@ -12,7 +12,7 @@ description: "HR policies, employee handbook, leave rules, benefits, and complia
 # ChromaDB collection is named after domain_id
 vectorstore:
   provider: chromadb
-  collection_name: hr
+  collection_name: hr_col
   persist_directory: ./data/chromadb/hr
 
 # Chunking: recursive works well for policy documents

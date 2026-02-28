@@ -228,26 +228,31 @@ class RetrievalFactory:
             embedding_model: Any,
             bm25_index: Any = None,
     ):
+        """
+        Create a single retrieval strategy instance.
+
+        For bm25 and hybrid strategies, if `bm25_index` is not supplied the
+        factory fetches the corpus from the vector store and builds one
+        automatically.  This keeps BM25 construction inside the factory layer
+        rather than leaking it into the pipeline.
+        """
         strategy_name = strategy_name.lower()
 
         if strategy_name == "vector_similarity":
-            from core.retrievals.vector_similarity_retrieval import VectorSimilarityRetrieval
             return VectorSimilarityRetrieval(
                 vectorstore=vectorstore,
                 embedding_model=embedding_model,
             )
 
-        elif strategy_name == "bm25":
-            from core.retrievals.bm25_retrieval import BM25Retrieval
+        elif strategy_name in ("bm25", "hybrid"):
+            # Build BM25 index from vectorstore when not pre-supplied
             if bm25_index is None:
-                raise ValueError("BM25 strategy requires bm25_index parameter")
-            return bm25_index  # already a BM25Retrieval instance
+                bm25_index = RetrievalFactory._build_bm25_from_vectorstore(vectorstore)
 
-        elif strategy_name == "hybrid":
-            from core.retrievals.hybrid_retrieval import HybridRetrieval
-            if bm25_index is None:
-                raise ValueError("Hybrid strategy requires bm25_index parameter")
+            if strategy_name == "bm25":
+                return bm25_index  # BM25Retrieval already implements RetrievalInterface
 
+            # hybrid
             retrieval_cfg = getattr(config, "retrieval", None)
             alpha = 0.7
             if retrieval_cfg is not None:
@@ -265,172 +270,41 @@ class RetrievalFactory:
             )
 
         else:
-            raise ValueError(f"Unknown retrieval strategy: {strategy_name}")
-
-    # =========================================================================
-    # PRIVATE FACTORY METHODS (Strategy-Specific)
-    # =========================================================================
-
-    @staticmethod
-    def _create_vector_similarity_retrieval(
-            vectorstore: VectorStoreInterface,
-            embedding_model: EmbeddingInterface
-    ) -> VectorSimilarityRetrieval:
-        """
-        Create vector similarity retrieval (dense/semantic search).
-
-        Simple strategy - delegates to existing vector store and embedder.
-        No additional configuration needed.
-
-        Returns:
-        --------
-        VectorSimilarityRetrieval:
-            Dense retrieval instance
-        """
-        logger.debug("Creating VectorSimilarityRetrieval...")
-
-        retriever = VectorSimilarityRetrieval(
-            vectorstore=vectorstore,
-            embedding_model=embedding_model
-        )
-
-        logger.debug(
-            f"✅ VectorSimilarityRetrieval created: "
-            f"model={embedding_model.get_model_name()}"
-        )
-
-        return retriever
-
-    @staticmethod
-    def _create_bm25_retrieval(
-            vectorstore: VectorStoreInterface
-    ) -> BM25Retrieval:
-        """
-        Create BM25 retrieval (sparse/keyword search).
-
-        Workflow:
-        ---------
-        1. Get corpus from vector store (all document texts)
-        2. Build BM25 index from corpus
-        3. Return BM25Retrieval instance
-
-        Note: This is called once at initialization. For large corpora,
-        consider caching or incremental updates.
-
-        Returns:
-        --------
-        BM25Retrieval:
-            Sparse retrieval instance
-
-        Raises:
-        -------
-        RuntimeError:
-            If vector store doesn't support get_all_documents()
-        """
-        logger.debug("Creating BM25Retrieval...")
-
-        # Get corpus from vector store (Phase 2 requirement)
-        try:
-            logger.info("Fetching corpus from vector store for BM25 index...")
-            corpus, doc_ids = vectorstore.get_all_documents()
-            logger.info(f"Retrieved {len(corpus):,} documents for BM25 index")
-
-        except Exception as e:
-            logger.error(f"Failed to get corpus from vector store: {e}")
-            raise RuntimeError(
-                f"Vector store must implement get_all_documents() for BM25.\n"
-                f"Error: {e}"
+            raise ValueError(
+                f"Unknown retrieval strategy: '{strategy_name}'. "
+                f"Supported: vector_similarity, bm25, hybrid"
             )
 
-        # Create BM25 retrieval
-        retriever = BM25Retrieval(
-            corpus=corpus,
-            doc_ids=doc_ids,
-            k1=1.5,  # BM25 term frequency saturation
-            b=0.75  # BM25 length normalization
-        )
-
-        logger.debug(
-            f"✅ BM25Retrieval created: "
-            f"corpus_size={len(corpus):,}, k1=1.5, b=0.75"
-        )
-
-        return retriever
+    # =========================================================================
+    # PRIVATE HELPERS
+    # =========================================================================
 
     @staticmethod
-    def _create_hybrid_retrieval(
-            config: DomainConfig,
-            vectorstore: VectorStoreInterface,
-            embedding_model: EmbeddingInterface
-    ) -> HybridRetrieval:
+    def _build_bm25_from_vectorstore(vectorstore: Any) -> "BM25Retrieval":
         """
-        Create hybrid retrieval (dense + sparse combined).
+        Fetch the full corpus from the vector store and return a BM25Retrieval
+        instance ready for search.
 
-        This is the RECOMMENDED strategy for Phase 2 production use.
-
-        Workflow:
-        ---------
-        1. Get corpus from vector store
-        2. Create BM25 index from corpus
-        3. Create HybridRetrieval combining vector + BM25
-        4. Use alpha from config (default: 0.7)
-
-        Returns:
-        --------
-        HybridRetrieval:
-            Hybrid retrieval instance
-
-        Raises:
-        -------
-        RuntimeError:
-            If corpus retrieval or BM25 creation fails
+        Raises ValueError if the store is empty or does not support
+        get_all_documents().
         """
-        logger.debug("Creating HybridRetrieval...")
-
-        # Step 1: Get corpus from vector store
-        try:
-            logger.info("Fetching corpus from vector store for hybrid index...")
-            corpus, doc_ids = vectorstore.get_all_documents()
-            logger.info(f"Retrieved {len(corpus):,} documents for hybrid index")
-
-        except Exception as e:
-            logger.error(f"Failed to get corpus from vector store: {e}")
-            raise RuntimeError(
-                f"Vector store must implement get_all_documents() for hybrid.\n"
-                f"Error: {e}"
+        if not hasattr(vectorstore, "get_all_documents"):
+            raise ValueError(
+                "Vector store does not support get_all_documents(); "
+                "required for bm25/hybrid retrieval."
             )
 
-        # Step 2: Create BM25 index
-        logger.info("Building BM25 index for hybrid retrieval...")
-        bm25_index = BM25Retrieval(
-            corpus=corpus,
-            doc_ids=doc_ids,
-            k1=1.5,
-            b=0.75
-        )
+        metadata = None
+        if hasattr(vectorstore, "get_all_documents_with_metadata"):
+            corpus, doc_ids, metadata = vectorstore.get_all_documents_with_metadata()
+        else:
+            corpus, doc_ids = vectorstore.get_all_documents()
 
-        # Step 3: Get hybrid config (alpha, normalize)
-        hybrid_config = config.retrieval.hybrid
-        alpha = hybrid_config.alpha if hybrid_config else 0.7
-        normalize_scores = hybrid_config.normalize_scores if hybrid_config else True
+        if not corpus:
+            raise ValueError("Cannot build BM25 index: vector store corpus is empty")
 
-        # Step 4: Create hybrid retrieval
-        retriever = HybridRetrieval(
-            vectorstore=vectorstore,
-            embedding_model=embedding_model,
-            bm25_index=bm25_index,
-            alpha=alpha,
-            normalize_scores=normalize_scores
-        )
-
-        logger.debug(
-            f"✅ HybridRetrieval created:\n"
-            f"   Alpha: {alpha:.2f} (dense={alpha:.0%}, sparse={1 - alpha:.0%})\n"
-            f"   Normalize: {normalize_scores}\n"
-            f"   Corpus: {len(corpus):,} documents"
-        )
-
-        return retriever
+        logger.info(f"Building BM25 index from {len(corpus):,} documents in vector store")
+        return BM25Retrieval(corpus=corpus, doc_ids=doc_ids, metadata=metadata)
 
 
 # =============================================================================

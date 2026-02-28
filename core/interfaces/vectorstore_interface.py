@@ -707,6 +707,45 @@ class VectorStoreInterface(ABC):
         """
         pass  # Subclasses MUST implement this method
 
+    @abstractmethod
+    def count(self) -> int:
+        """
+        Return the total number of vectors currently stored in this collection.
+
+        Used by the pipeline to check corpus size before building BM25 indexes
+        and by the domain service to report collection statistics.
+
+        Returns:
+        --------
+        int:
+            Total chunk (vector) count. 0 for an empty collection.
+        """
+        pass  # Subclasses MUST implement this method
+
+    @abstractmethod
+    def update_document_metadata(self, doc_id: str, updates: Dict[str, Any]) -> int:
+        """
+        Merge `updates` into the existing metadata of every chunk that belongs
+        to `doc_id`.
+
+        Used by the pipeline to implement the deprecation workflow without
+        leaking ChromaDB-specific internals (`.collection`) into higher layers.
+
+        Parameters:
+        -----------
+        doc_id : str
+            The document whose chunks should be updated.
+        updates : Dict[str, Any]
+            Key-value pairs to merge into each chunk's metadata.
+            Existing keys are overwritten; other keys are preserved.
+
+        Returns:
+        --------
+        int:
+            Number of chunks updated. 0 if `doc_id` was not found.
+        """
+        pass  # Subclasses MUST implement this method
+
 
 # =============================================================================
 # USAGE NOTES FOR IMPLEMENTERS

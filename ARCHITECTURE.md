@@ -1,7 +1,7 @@
 # Architecture - GenAI Multi-Domain RAG Platform
 
 **Last Updated:** February 2026
-**Stack:** Python · ChromaDB · SentenceTransformers / Gemini / OpenAI · Gradio · Pydantic · BM25
+**Stack:** Python ï¿½ ChromaDB ï¿½ SentenceTransformers / Gemini / OpenAI ï¿½ Gradio ï¿½ Pydantic ï¿½ BM25
 
 ---
 
@@ -255,7 +255,9 @@ python -c "from core.services.domain_service import DomainService; DomainService
 **Current retrieval contract (code-aligned):**
 - Vector store search returns both raw `distance` and normalized `score`.
 - Score normalization at store boundary uses `score = 1 / (1 + distance)`.
+- BM25 index is built entirely inside `RetrievalFactory._build_bm25_from_vectorstore()` â€” the pipeline never imports concrete retrieval classes.
 - BM25/Hybrid initialization uses corpus + metadata when available (`get_all_documents_with_metadata`) so metadata filters are preserved in sparse retrieval.
+- After every `upload_document` or `delete_document`, the pipeline calls `_refresh_retrieval_strategies()` to rebuild BM25/hybrid indexes so new/deleted chunks are immediately reflected in retrieval.
 
 **Hybrid alpha guide:**
 
@@ -342,12 +344,31 @@ Never commit API keys. Use a `.env` file (already in `.gitignore`).
 
 ---
 
+## VectorStoreInterface â€” Required Methods
+
+All vector store implementations must satisfy this contract:
+
+| Method | Signature | Purpose |
+|---|---|---|
+| `upsert` | `(chunks, embeddings) â†’ None` | Write chunks + vectors |
+| `search` | `(query_emb, top_k, filters) â†’ List[Dict]` | ANN similarity search |
+| `delete_by_doc_id` | `(doc_id) â†’ None` | Remove all chunks for a document |
+| `get_all_documents` | `() â†’ (corpus, ids)` | Full corpus for BM25 index |
+| `get_all_documents_with_metadata` | `() â†’ (corpus, ids, metadata)` | Corpus + metadata for filtered BM25 |
+| `count` | `() â†’ int` | Total vector count (used for empty-store checks) |
+| `update_document_metadata` | `(doc_id, updates) â†’ int` | Merge metadata updates; returns chunks updated |
+
+`count()` and `update_document_metadata()` replace direct `.collection` access so the pipeline remains store-agnostic.
+
+---
+
 ## Known Limitations (Current State)
 
 | Item | Status |
 |---|---|
 | OpenAI embedding provider | Config supported, implementation pending |
-| Pinecone store | Interface defined, not fully tested |
+| Pinecone `count()` / `update_document_metadata()` | Interface defined, Pinecone implementation pending |
 | Qdrant / FAISS | Config allows, factory not implemented |
 | Admin UI access control | Password protection not yet implemented |
 | LLM reranking | Config present but not wired into pipeline |
+| Incremental BM25 updates | Full rebuild on every upload/delete; acceptable for MVP |

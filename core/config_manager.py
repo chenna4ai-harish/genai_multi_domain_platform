@@ -311,6 +311,9 @@ class ConfigManager:
         self.domain_dir.mkdir(parents=True, exist_ok=True)
         self.template_dir.mkdir(parents=True, exist_ok=True)
 
+        # Cache for .env file — loaded at most once per ConfigManager instance
+        self._dotenv_cache: Optional[Dict] = None
+
         # Load global config once (merged into all domain configs)
         self.global_config = self._load_yaml(self.global_config_file) or {}
         self._inject_env_vars(self.global_config)
@@ -339,14 +342,12 @@ class ConfigManager:
             logger.error(f"Failed to load YAML from {path}: {e}")
             raise
 
-    from dotenv import dotenv_values
-
     def _inject_env_vars(self, config: Dict) -> None:
         """
         Recursively inject environment variables.
 
         Replaces ${ENV_VAR} syntax with actual environment variable values.
-        If not found in os.environ, falls back to .env file.
+        If not found in os.environ, falls back to .env file (cached per instance).
         """
         if isinstance(config, dict):
             for k, v in config.items():
@@ -356,10 +357,11 @@ class ConfigManager:
                     # 1) Try system environment first
                     env_value = os.getenv(env_var)
 
-                    # 2) If not found → fallback to .env file
+                    # 2) If not found → fallback to .env file (load once, cache)
                     if not env_value:
-                        env_file = dotenv_values(".env")
-                        env_value = env_file.get(env_var)
+                        if self._dotenv_cache is None:
+                            self._dotenv_cache = dotenv_values(".env")
+                        env_value = self._dotenv_cache.get(env_var)
 
                     # Apply value if found
                     if env_value:
@@ -400,7 +402,10 @@ class ConfigManager:
             Example: ["hr_domain", "finance", "engineering"]
         """
         yaml_files = glob.glob(str(self.domain_dir / "*.yaml"))
-        names = [Path(f).stem for f in yaml_files]
+        names = [
+            Path(f).stem for f in yaml_files
+            if not Path(f).stem.endswith("_playground_temp")
+        ]
         logger.debug(f"Found {len(names)} domain configs: {names}")
         return names
 

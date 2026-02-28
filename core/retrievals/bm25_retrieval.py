@@ -227,18 +227,18 @@ class BM25Retrieval(RetrievalInterface):
         self.k1 = k1
         self.b = b
 
-        # Tokenize corpus
-        logger.info("Tokenizing corpus...")
-        tokenized_corpus = [self._tokenize(doc) for doc in corpus]
+        self._build_index()
 
-        # Build BM25 index
-        logger.info("Building BM25 index...")
-        self.bm25 = BM25Okapi(tokenized_corpus, k1=k1, b=b)
-
+    def _build_index(self) -> None:
+        """Build (or rebuild) the BM25 index from the current corpus."""
+        logger.info(f"Building BM25 index for {len(self.corpus):,} documents...")
+        tokenized_corpus = [self._tokenize(doc) for doc in self.corpus]
+        self.bm25 = BM25Okapi(tokenized_corpus, k1=self.k1, b=self.b)
         logger.info(
             f"✅ BM25 index built:\n"
-            f"   Documents: {len(corpus):,}\n"
-            f"   Avg doc length: {sum(len(doc.split()) for doc in corpus) / len(corpus):.1f} terms"
+            f"   Documents: {len(self.corpus):,}\n"
+            f"   Avg doc length: "
+            f"{sum(len(doc.split()) for doc in self.corpus) / len(self.corpus):.1f} terms"
         )
 
     def retrieve(
@@ -468,15 +468,20 @@ class BM25Retrieval(RetrievalInterface):
         # Rebuild BM25 index
         bm25.update_corpus(corpus, doc_ids)
         """
-        logger.info(f"Updating BM25 index with {len(corpus):,} documents...")
+        if len(corpus) != len(doc_ids):
+            raise ValueError(
+                f"Corpus length ({len(corpus)}) must match doc_ids length ({len(doc_ids)})"
+            )
+        if metadata is not None and len(metadata) != len(corpus):
+            raise ValueError(
+                f"Metadata length ({len(metadata)}) must match corpus length ({len(corpus)})"
+            )
 
-        self.__init__(
-            corpus=corpus,
-            doc_ids=doc_ids,
-            metadata=metadata,
-            k1=self.k1,
-            b=self.b
-        )
+        logger.info(f"Updating BM25 index with {len(corpus):,} documents...")
+        self.corpus = corpus
+        self.doc_ids = doc_ids
+        self.metadata = metadata or [{}] * len(corpus)
+        self._build_index()
 
 
     # ------------------------------------------------------------------

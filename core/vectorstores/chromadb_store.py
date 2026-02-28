@@ -448,6 +448,31 @@ class ChromaDBStore(VectorStoreInterface):
                 f"Error: {e}"
             )
 
+    def count(self) -> int:
+        """Return the total number of vectors in the collection."""
+        return self.collection.count()
+
+    def update_document_metadata(self, doc_id: str, updates: Dict[str, Any]) -> int:
+        """
+        Merge `updates` into the metadata of all chunks belonging to `doc_id`.
+
+        Returns the number of chunks updated (0 if doc_id not found).
+        """
+        results = self.collection.get(
+            where={"doc_id": doc_id},
+            include=["metadatas"],
+        )
+        ids = results.get("ids") or []
+        if not ids:
+            logger.warning(f"update_document_metadata: no chunks found for doc_id='{doc_id}'")
+            return 0
+
+        existing = results.get("metadatas") or [{}] * len(ids)
+        merged = [{**dict(md or {}), **updates} for md in existing]
+        self.collection.update(ids=ids, metadatas=merged)
+        logger.info(f"✅ Updated metadata on {len(ids)} chunks for doc_id='{doc_id}'")
+        return len(ids)
+
     # =========================================================================
     # HELPER METHODS (Private)
     # =========================================================================
