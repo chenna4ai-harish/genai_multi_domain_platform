@@ -50,7 +50,7 @@ from core.factories.retrieval_factory import RetrievalFactory
 # Create retrievers from config
 retrievers = RetrievalFactory.create_retrievers(
     config=domain_config,
-    vector_store=vector_store,
+    vectorstore=vectorstore,
     embedding_model=embedding_model
 )
 
@@ -64,14 +64,6 @@ References:
 - Factory Pattern: https://refactoring.guru/design-patterns/factory-method
 
 """
-
-import sys
-from pathlib import Path
-project_root = Path(__file__).parent.parent  # Go up two levels from config_manager.py
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
-
 
 from typing import Dict, Any, Optional
 import logging
@@ -106,19 +98,19 @@ class RetrievalFactory:
        - Uses: VectorSimilarityRetrieval
        - Best for: Paraphrases, concepts, synonyms
        - Speed: Fast (~50-100ms)
-       - Dependencies: vector_store, embedding_model
+       - Dependencies: vectorstore, embedding_model
 
     2. **bm25** (Sparse/Keywords)
        - Uses: BM25Retrieval
        - Best for: Exact terms, acronyms, IDs
        - Speed: Very fast (~10-20ms)
-       - Dependencies: vector_store (for corpus)
+       - Dependencies: vectorstore (for corpus)
 
     3. **hybrid** (Dense + Sparse) ⭐ RECOMMENDED
        - Uses: HybridRetrieval
        - Best for: All query types (most robust)
        - Speed: Moderate (~100-150ms)
-       - Dependencies: vector_store, embedding_model
+       - Dependencies: vectorstore, embedding_model
 
     Methods:
     --------
@@ -130,7 +122,7 @@ class RetrievalFactory:
     # Create all configured retrievers
     retrievers = RetrievalFactory.create_retrievers(
         config=domain_config,
-        vector_store=chromadb_store,
+        vectorstore=chromadb_store,
         embedding_model=sentence_transformer
     )
 
@@ -141,7 +133,7 @@ class RetrievalFactory:
     @staticmethod
     def create_retrievers(
             config: DomainConfig,
-            vector_store: VectorStoreInterface,
+            vectorstore: VectorStoreInterface,
             embedding_model: EmbeddingInterface
     ) -> Dict[str, RetrievalInterface]:
         """
@@ -154,7 +146,7 @@ class RetrievalFactory:
         -----------
         config : DomainConfig
             Domain configuration with retrieval settings
-        vector_store : VectorStoreInterface
+        vectorstore : VectorStoreInterface
             Vector store instance (ChromaDB, Pinecone, etc.)
         embedding_model : EmbeddingInterface
             Embedding model instance (Sentence-Transformers, Gemini, etc.)
@@ -185,7 +177,7 @@ class RetrievalFactory:
 
         retrievers = RetrievalFactory.create_retrievers(
             config=domain_config,
-            vector_store=vector_store,
+            vectorstore=vectorstore,
             embedding_model=embedder
         )
 
@@ -213,7 +205,7 @@ class RetrievalFactory:
                 retriever = RetrievalFactory.create_retriever(
                     strategy_name=strategy_name,
                     config=config,
-                    vector_store=vector_store,
+                    vectorstore=vectorstore,
                     embedding_model=embedding_model
                 )
 
@@ -231,237 +223,88 @@ class RetrievalFactory:
     @staticmethod
     def create_retriever(
             strategy_name: str,
-            config: DomainConfig,
-            vector_store: VectorStoreInterface,
-            embedding_model: EmbeddingInterface
-    ) -> RetrievalInterface:
+            config: Any,
+            vectorstore: Any,
+            embedding_model: Any,
+            bm25_index: Any = None,
+    ):
         """
-        Create a single retrieval strategy by name.
+        Create a single retrieval strategy instance.
 
-        Parameters:
-        -----------
-        strategy_name : str
-            Retrieval strategy name: "vector_similarity", "bm25", or "hybrid"
-        config : DomainConfig
-            Domain configuration
-        vector_store : VectorStoreInterface
-            Vector store instance
-        embedding_model : EmbeddingInterface
-            Embedding model instance
-
-        Returns:
-        --------
-        RetrievalInterface:
-            Retriever instance
-
-        Raises:
-        -------
-        ValueError:
-            If unknown strategy name
-
-        Example:
-        --------
-        # Create hybrid retriever
-        hybrid = RetrievalFactory.create_retriever(
-            strategy_name="hybrid",
-            config=domain_config,
-            vector_store=vector_store,
-            embedding_model=embedder
-        )
+        For bm25 and hybrid strategies, if `bm25_index` is not supplied the
+        factory fetches the corpus from the vector store and builds one
+        automatically.  This keeps BM25 construction inside the factory layer
+        rather than leaking it into the pipeline.
         """
-        logger.debug(f"Creating retriever: {strategy_name}")
+        strategy_name = strategy_name.lower()
 
-        # Strategy 1: Vector Similarity (Dense/Semantic)
         if strategy_name == "vector_similarity":
-            return RetrievalFactory._create_vector_similarity_retrieval(
-                vector_store=vector_store,
-                embedding_model=embedding_model
+            return VectorSimilarityRetrieval(
+                vectorstore=vectorstore,
+                embedding_model=embedding_model,
             )
 
-        # Strategy 2: BM25 (Sparse/Keywords)
-        elif strategy_name == "bm25":
-            return RetrievalFactory._create_bm25_retrieval(
-                vector_store=vector_store
-            )
+        elif strategy_name in ("bm25", "hybrid"):
+            # Build BM25 index from vectorstore when not pre-supplied
+            if bm25_index is None:
+                bm25_index = RetrievalFactory._build_bm25_from_vectorstore(vectorstore)
 
-        # Strategy 3: Hybrid (Dense + Sparse) - RECOMMENDED
-        elif strategy_name == "hybrid":
-            return RetrievalFactory._create_hybrid_retrieval(
-                config=config,
-                vector_store=vector_store,
-                embedding_model=embedding_model
+            if strategy_name == "bm25":
+                return bm25_index  # BM25Retrieval already implements RetrievalInterface
+
+            # hybrid
+            retrieval_cfg = getattr(config, "retrieval", None)
+            alpha = 0.7
+            if retrieval_cfg is not None:
+                hybrid_cfg = getattr(retrieval_cfg, "hybrid", None)
+                if isinstance(hybrid_cfg, dict):
+                    alpha = hybrid_cfg.get("alpha", 0.7)
+                elif hybrid_cfg is not None:
+                    alpha = getattr(hybrid_cfg, "alpha", 0.7)
+
+            return HybridRetrieval(
+                vectorstore=vectorstore,
+                embedding_model=embedding_model,
+                bm25_index=bm25_index,
+                alpha=alpha,
             )
 
         else:
             raise ValueError(
-                f"Unknown retrieval strategy: '{strategy_name}'\n"
-                f"Supported strategies: vector_similarity, bm25, hybrid"
+                f"Unknown retrieval strategy: '{strategy_name}'. "
+                f"Supported: vector_similarity, bm25, hybrid"
             )
 
     # =========================================================================
-    # PRIVATE FACTORY METHODS (Strategy-Specific)
+    # PRIVATE HELPERS
     # =========================================================================
 
     @staticmethod
-    def _create_vector_similarity_retrieval(
-            vector_store: VectorStoreInterface,
-            embedding_model: EmbeddingInterface
-    ) -> VectorSimilarityRetrieval:
+    def _build_bm25_from_vectorstore(vectorstore: Any) -> "BM25Retrieval":
         """
-        Create vector similarity retrieval (dense/semantic search).
+        Fetch the full corpus from the vector store and return a BM25Retrieval
+        instance ready for search.
 
-        Simple strategy - delegates to existing vector store and embedder.
-        No additional configuration needed.
-
-        Returns:
-        --------
-        VectorSimilarityRetrieval:
-            Dense retrieval instance
+        Raises ValueError if the store is empty or does not support
+        get_all_documents().
         """
-        logger.debug("Creating VectorSimilarityRetrieval...")
-
-        retriever = VectorSimilarityRetrieval(
-            vector_store=vector_store,
-            embedding_model=embedding_model
-        )
-
-        logger.debug(
-            f"✅ VectorSimilarityRetrieval created: "
-            f"model={embedding_model.get_model_name()}"
-        )
-
-        return retriever
-
-    @staticmethod
-    def _create_bm25_retrieval(
-            vector_store: VectorStoreInterface
-    ) -> BM25Retrieval:
-        """
-        Create BM25 retrieval (sparse/keyword search).
-
-        Workflow:
-        ---------
-        1. Get corpus from vector store (all document texts)
-        2. Build BM25 index from corpus
-        3. Return BM25Retrieval instance
-
-        Note: This is called once at initialization. For large corpora,
-        consider caching or incremental updates.
-
-        Returns:
-        --------
-        BM25Retrieval:
-            Sparse retrieval instance
-
-        Raises:
-        -------
-        RuntimeError:
-            If vector store doesn't support get_all_documents()
-        """
-        logger.debug("Creating BM25Retrieval...")
-
-        # Get corpus from vector store (Phase 2 requirement)
-        try:
-            logger.info("Fetching corpus from vector store for BM25 index...")
-            corpus, doc_ids = vector_store.get_all_documents()
-            logger.info(f"Retrieved {len(corpus):,} documents for BM25 index")
-
-        except Exception as e:
-            logger.error(f"Failed to get corpus from vector store: {e}")
-            raise RuntimeError(
-                f"Vector store must implement get_all_documents() for BM25.\n"
-                f"Error: {e}"
+        if not hasattr(vectorstore, "get_all_documents"):
+            raise ValueError(
+                "Vector store does not support get_all_documents(); "
+                "required for bm25/hybrid retrieval."
             )
 
-        # Create BM25 retrieval
-        retriever = BM25Retrieval(
-            corpus=corpus,
-            doc_ids=doc_ids,
-            k1=1.5,  # BM25 term frequency saturation
-            b=0.75  # BM25 length normalization
-        )
+        metadata = None
+        if hasattr(vectorstore, "get_all_documents_with_metadata"):
+            corpus, doc_ids, metadata = vectorstore.get_all_documents_with_metadata()
+        else:
+            corpus, doc_ids = vectorstore.get_all_documents()
 
-        logger.debug(
-            f"✅ BM25Retrieval created: "
-            f"corpus_size={len(corpus):,}, k1=1.5, b=0.75"
-        )
+        if not corpus:
+            raise ValueError("Cannot build BM25 index: vector store corpus is empty")
 
-        return retriever
-
-    @staticmethod
-    def _create_hybrid_retrieval(
-            config: DomainConfig,
-            vector_store: VectorStoreInterface,
-            embedding_model: EmbeddingInterface
-    ) -> HybridRetrieval:
-        """
-        Create hybrid retrieval (dense + sparse combined).
-
-        This is the RECOMMENDED strategy for Phase 2 production use.
-
-        Workflow:
-        ---------
-        1. Get corpus from vector store
-        2. Create BM25 index from corpus
-        3. Create HybridRetrieval combining vector + BM25
-        4. Use alpha from config (default: 0.7)
-
-        Returns:
-        --------
-        HybridRetrieval:
-            Hybrid retrieval instance
-
-        Raises:
-        -------
-        RuntimeError:
-            If corpus retrieval or BM25 creation fails
-        """
-        logger.debug("Creating HybridRetrieval...")
-
-        # Step 1: Get corpus from vector store
-        try:
-            logger.info("Fetching corpus from vector store for hybrid index...")
-            corpus, doc_ids = vector_store.get_all_documents()
-            logger.info(f"Retrieved {len(corpus):,} documents for hybrid index")
-
-        except Exception as e:
-            logger.error(f"Failed to get corpus from vector store: {e}")
-            raise RuntimeError(
-                f"Vector store must implement get_all_documents() for hybrid.\n"
-                f"Error: {e}"
-            )
-
-        # Step 2: Create BM25 index
-        logger.info("Building BM25 index for hybrid retrieval...")
-        bm25_index = BM25Retrieval(
-            corpus=corpus,
-            doc_ids=doc_ids,
-            k1=1.5,
-            b=0.75
-        )
-
-        # Step 3: Get hybrid config (alpha, normalize)
-        hybrid_config = config.retrieval.hybrid
-        alpha = hybrid_config.alpha if hybrid_config else 0.7
-        normalize_scores = hybrid_config.normalize_scores if hybrid_config else True
-
-        # Step 4: Create hybrid retrieval
-        retriever = HybridRetrieval(
-            vector_store=vector_store,
-            embedding_model=embedding_model,
-            bm25_index=bm25_index,
-            alpha=alpha,
-            normalize_scores=normalize_scores
-        )
-
-        logger.debug(
-            f"✅ HybridRetrieval created:\n"
-            f"   Alpha: {alpha:.2f} (dense={alpha:.0%}, sparse={1 - alpha:.0%})\n"
-            f"   Normalize: {normalize_scores}\n"
-            f"   Corpus: {len(corpus):,} documents"
-        )
-
-        return retriever
+        logger.info(f"Building BM25 index from {len(corpus):,} documents in vector store")
+        return BM25Retrieval(corpus=corpus, doc_ids=doc_ids, metadata=metadata)
 
 
 # =============================================================================
@@ -541,10 +384,10 @@ config_mgr = ConfigManager()
 domain_config = config_mgr.load_domain_config("hr")
 
 # Step 2: Create vector store and embedder
-from core.factories.vector_store_factory import VectorStoreFactory
+from core.factories.vectorstore_factory import VectorStoreFactory
 from core.factories.embedding_factory import EmbeddingFactory
 
-vector_store = VectorStoreFactory.create_vector_store(domain_config)
+vectorstore = VectorStoreFactory.create_vectorstore(domain_config)
 embedder = EmbeddingFactory.create_embedding_model(domain_config)
 
 # Step 3: Create retrievers
@@ -552,7 +395,7 @@ from core.factories.retrieval_factory import RetrievalFactory
 
 retrievers = RetrievalFactory.create_retrievers(
     config=domain_config,
-    vector_store=vector_store,
+    vectorstore=vectorstore,
     embedding_model=embedder
 )
 

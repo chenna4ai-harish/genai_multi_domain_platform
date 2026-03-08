@@ -1,6 +1,6 @@
 """
 
-core/factories/vector_store_factory.py
+core/factories/vectorstore_factory.py
 
 Factory for creating vector store instances based on configuration (Phase 2).
 
@@ -53,7 +53,7 @@ class VectorStoreFactory:
     """
 
     @staticmethod
-    def create_vector_store(
+    def create_vectorstore(
             config: DomainConfig
     ) -> VectorStoreInterface:
         """
@@ -62,7 +62,7 @@ class VectorStoreFactory:
         Parameters:
         -----------
         config : DomainConfig
-            Domain configuration with vector_store settings
+            Domain configuration with vectorstore settings
 
         Returns:
         --------
@@ -77,13 +77,14 @@ class VectorStoreFactory:
         Example:
         --------
         # From YAML config:
-        # vector_store:
+        # vectorstore:
         #   provider: "chromadb"
         #   collection_name: "hr_collection"
 
-        vector_store = VectorStoreFactory.create_vector_store(config)
+        vectorstore = VectorStoreFactory.create_vectorstore(config)
         """
-        provider = config.vector_store.provider.lower()
+        print(f" create_vectorstore config {config} ")
+        provider = config.provider.lower()
 
         logger.info(f"Creating vector store: {provider}")
 
@@ -120,9 +121,9 @@ class VectorStoreFactory:
         """
         logger.debug("Creating ChromaDB store...")
 
-        vs_config = config.vector_store
+        vs_config = config
 
-        vector_store = ChromaDBStore(
+        vectorstore = ChromaDBStore(
             persist_directory=vs_config.persist_directory,
             collection_name=vs_config.collection_name
         )
@@ -133,7 +134,7 @@ class VectorStoreFactory:
             f"   Directory: {vs_config.persist_directory}"
         )
 
-        return vector_store
+        return vectorstore
 
     @staticmethod
     def _create_pinecone(config: DomainConfig) -> PineconeStore:
@@ -148,9 +149,9 @@ class VectorStoreFactory:
         """
         logger.debug("Creating Pinecone store...")
 
-        vs_config = config.vector_store
+        vs_config = config
 
-        vector_store = PineconeStore(
+        vectorstore = PineconeStore(
             index_name=vs_config.collection_name,  # In Pinecone, it's called index_name
             api_key=vs_config.api_key,
             environment=vs_config.region,  # Pinecone calls it environment
@@ -163,7 +164,7 @@ class VectorStoreFactory:
             f"   Environment: {vs_config.region}"
         )
 
-        return vector_store
+        return vectorstore
 
 
 # =============================================================================
@@ -175,7 +176,7 @@ To add Qdrant support in future:
 
 1. Install: pip install qdrant-client
 
-2. Create: core/vector_stores/qdrant_store.py
+2. Create: core/vectorstores/qdrant_store.py
 
 3. Add to factory:
    elif provider == "qdrant":
@@ -184,9 +185,9 @@ To add Qdrant support in future:
 4. Implement _create_qdrant():
    @staticmethod
    def _create_qdrant(config: DomainConfig) -> QdrantStore:
-       from core.vector_stores.qdrant_store import QdrantStore
+       from core.vectorstores.qdrant_store import QdrantStore
 
-       vs_config = config.vector_store
+       vs_config = config.vectorstore
 
        return QdrantStore(
            host=vs_config.host or "localhost",
@@ -205,7 +206,7 @@ Same pattern for FAISS, Weaviate, Milvus, etc.
 if __name__ == "__main__":
     """
     Demonstration of VectorStoreFactory usage.
-    Run: python core/factories/vector_store_factory.py
+    Run: python core/factories/vectorstore_factory.py
     """
     import logging
 
@@ -233,13 +234,13 @@ Configuration Examples:
 ------------------------
 
 # ChromaDB (Local)
-vector_store:
+vectorstore:
   provider: "chromadb"
   collection_name: "hr_collection"
   persist_directory: "./data/chroma_db"
 
 # Pinecone (Cloud)
-vector_store:
+vectorstore:
   provider: "pinecone"
   collection_name: "hr-docs-prod"
   api_key: ${PINECONE_API_KEY}  # From environment
@@ -250,23 +251,23 @@ Usage Pattern:
 --------------
 
 from core.config_manager import ConfigManager
-from core.factories.vector_store_factory import VectorStoreFactory
+from core.factories.vectorstore_factory import VectorStoreFactory
 
 # Load config
 config_mgr = ConfigManager()
 hr_config = config_mgr.load_domain_config("hr")
 
 # Create vector store (factory selects based on config)
-vector_store = VectorStoreFactory.create_vector_store(hr_config)
+vectorstore = VectorStoreFactory.create_vectorstore(hr_config)
 
 # Use vector store (works with any provider!)
-vector_store.add(chunks, embeddings)
-results = vector_store.search(query_embedding, top_k=10)
+vectorstore.add(chunks, embeddings)
+results = vectorstore.search(query_embedding, top_k=10)
 
 Adding New Providers:
 ---------------------
 To add Qdrant/FAISS/Weaviate later:
-1. Create implementation: core/vector_stores/qdrant_store.py
+1. Create implementation: core/vectorstores/qdrant_store.py
 2. Add to factory elif chain
 3. Update config model
 4. No changes to calling code needed!

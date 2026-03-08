@@ -51,7 +51,7 @@ Example Usage:
 from core.retrievals.bm25_retrieval import BM25Retrieval
 
 # Get corpus from vector store (Phase 2)
-corpus, doc_ids = vector_store.get_all_documents()
+corpus, doc_ids = vectorstore.get_all_documents()
 
 # Initialize BM25 index
 bm25 = BM25Retrieval(corpus=corpus, doc_ids=doc_ids)
@@ -131,7 +131,7 @@ class BM25Retrieval(RetrievalInterface):
     Parameters:
     -----------
     corpus : List[str]
-        List of all document texts (from vector_store.get_all_documents())
+        List of all document texts (from vectorstore.get_all_documents())
     doc_ids : List[str]
         List of corresponding document IDs (same order as corpus)
     metadata : List[Dict], optional
@@ -146,7 +146,7 @@ class BM25Retrieval(RetrievalInterface):
     Example:
     --------
     # Get corpus from vector store
-    corpus, doc_ids = vector_store.get_all_documents()
+    corpus, doc_ids = vectorstore.get_all_documents()
 
     # Get metadata for filtering (optional but recommended)
     metadata = [{'domain': 'hr', 'doc_type': 'policy'}, ...]
@@ -227,18 +227,18 @@ class BM25Retrieval(RetrievalInterface):
         self.k1 = k1
         self.b = b
 
-        # Tokenize corpus
-        logger.info("Tokenizing corpus...")
-        tokenized_corpus = [self._tokenize(doc) for doc in corpus]
+        self._build_index()
 
-        # Build BM25 index
-        logger.info("Building BM25 index...")
-        self.bm25 = BM25Okapi(tokenized_corpus, k1=k1, b=b)
-
+    def _build_index(self) -> None:
+        """Build (or rebuild) the BM25 index from the current corpus."""
+        logger.info(f"Building BM25 index for {len(self.corpus):,} documents...")
+        tokenized_corpus = [self._tokenize(doc) for doc in self.corpus]
+        self.bm25 = BM25Okapi(tokenized_corpus, k1=self.k1, b=self.b)
         logger.info(
             f"✅ BM25 index built:\n"
-            f"   Documents: {len(corpus):,}\n"
-            f"   Avg doc length: {sum(len(doc.split()) for doc in corpus) / len(corpus):.1f} terms"
+            f"   Documents: {len(self.corpus):,}\n"
+            f"   Avg doc length: "
+            f"{sum(len(doc.split()) for doc in self.corpus) / len(self.corpus):.1f} terms"
         )
 
     def retrieve(
@@ -463,19 +463,46 @@ class BM25Retrieval(RetrievalInterface):
         Example:
         --------
         # Get updated corpus from vector store
-        corpus, doc_ids = vector_store.get_all_documents()
+        corpus, doc_ids = vectorstore.get_all_documents()
 
         # Rebuild BM25 index
         bm25.update_corpus(corpus, doc_ids)
         """
-        logger.info(f"Updating BM25 index with {len(corpus):,} documents...")
+        if len(corpus) != len(doc_ids):
+            raise ValueError(
+                f"Corpus length ({len(corpus)}) must match doc_ids length ({len(doc_ids)})"
+            )
+        if metadata is not None and len(metadata) != len(corpus):
+            raise ValueError(
+                f"Metadata length ({len(metadata)}) must match corpus length ({len(corpus)})"
+            )
 
-        self.__init__(
-            corpus=corpus,
-            doc_ids=doc_ids,
-            metadata=metadata,
-            k1=self.k1,
-            b=self.b
+        logger.info(f"Updating BM25 index with {len(corpus):,} documents...")
+        self.corpus = corpus
+        self.doc_ids = doc_ids
+        self.metadata = metadata or [{}] * len(corpus)
+        self._build_index()
+
+
+    # ------------------------------------------------------------------
+    # Adapter for HybridRetrieval: alias .search(...) to .retrieve(...)
+    # ------------------------------------------------------------------
+    def search(
+        self,
+        query_text: str,
+        top_k: int = 10,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Adapter so HybridRetrieval can call bm25_index.search(...).
+
+        HybridRetrieval passes `filters` where retrieve expects
+        `metadata_filters`, so we just forward the call.
+        """
+        return self.retrieve(
+            query_text=query_text,
+            metadata_filters=filters,
+            top_k=top_k,
         )
 
 

@@ -71,6 +71,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field, ValidationError, field_validator
+from dotenv import dotenv_values
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -189,30 +190,49 @@ class MetadataConfig(BaseModel):
     )
 
 
+class LLMConfig(BaseModel):
+    """LLM configuration for answer generation."""
+    provider: str = Field(default="gemini", description="LLM provider: gemini, openai")
+    model_name: str = Field(default="gemini-1.5-flash", description="Model identifier")
+    temperature: float = Field(default=0.2, ge=0.0, le=1.0, description="Sampling temperature")
+    max_tokens: int = Field(default=512, ge=64, le=8192, description="Max output tokens")
+    api_key: Optional[str] = Field(default=None, description="API key (from environment)")
+
+    @field_validator('provider')
+    @classmethod
+    def validate_provider(cls, v):
+        allowed = ["gemini", "openai"]
+        if v not in allowed:
+            raise ValueError(f"Invalid LLM provider: {v}. Allowed: {allowed}")
+        return v
+
+
 class DomainConfig(BaseModel):
     """
-    Complete Phase 2 domain configuration schema.
+    Complete domain configuration schema — single source of truth.
 
-    This is the root configuration model that all domain configs must conform to.
-    Validates all required fields and sub-configurations.
+    Every domain YAML must conform to this schema.
+    All fields map 1:1 to keys in configs/domains/<name>.yaml.
     """
     # Identity
     domain_id: str = Field(..., description="Unique domain identifier")
     name: str = Field(..., description="Human-readable domain name")
     description: Optional[str] = Field(default=None, description="Domain description")
 
-    # Component configurations (CRITICAL: Match field names used in code)
+    # Component configurations
     chunking: ChunkingConfig = Field(..., description="Chunking configuration")
     embeddings: EmbeddingConfig = Field(..., description="Embedding configuration")
     retrieval: RetrievalConfig = Field(..., description="Retrieval configuration")
-    vector_store: VectorStoreConfig = Field(..., description="Vector store configuration")
+    vectorstore: VectorStoreConfig = Field(..., description="Vector store configuration")
+
+    # LLM for answer generation
+    llm: Optional[LLMConfig] = Field(default_factory=LLMConfig, description="LLM configuration")
 
     # Optional configurations
     security: Optional[SecurityConfig] = Field(default_factory=SecurityConfig)
     metadata: Optional[MetadataConfig] = Field(default_factory=MetadataConfig)
 
     class Config:
-        # Allow extra fields for future extensibility
         extra = "allow"
 
 
@@ -258,7 +278,7 @@ class ConfigManager:
     # Access configuration values
     print(f"Chunking strategy: {hr_config.chunking.strategy}")
     print(f"Embedding provider: {hr_config.embeddings.provider}")
-    print(f"Vector store: {hr_config.vector_store.provider}")
+    print(f"Vector store: {hr_config.vectorstore.provider}")
     """
 
     def __init__(
@@ -290,6 +310,9 @@ class ConfigManager:
         # Create directories if they don't exist
         self.domain_dir.mkdir(parents=True, exist_ok=True)
         self.template_dir.mkdir(parents=True, exist_ok=True)
+
+        # Cache for .env file — loaded at most once per ConfigManager instance
+        self._dotenv_cache: Optional[Dict] = None
 
         # Load global config once (merged into all domain configs)
         self.global_config = self._load_yaml(self.global_config_file) or {}
@@ -324,20 +347,32 @@ class ConfigManager:
         Recursively inject environment variables.
 
         Replaces ${ENV_VAR} syntax with actual environment variable values.
-        Example: api_key: ${GEMINI_API_KEY} → api_key: "actual-key-value"
+        If not found in os.environ, falls back to .env file (cached per instance).
         """
         if isinstance(config, dict):
             for k, v in config.items():
                 if isinstance(v, str) and v.startswith("${") and v.endswith("}"):
                     env_var = v[2:-1]  # Extract ENV_VAR from ${ENV_VAR}
+
+                    # 1) Try system environment first
                     env_value = os.getenv(env_var)
+
+                    # 2) If not found → fallback to .env file (load once, cache)
+                    if not env_value:
+                        if self._dotenv_cache is None:
+                            self._dotenv_cache = dotenv_values(".env")
+                        env_value = self._dotenv_cache.get(env_var)
+
+                    # Apply value if found
                     if env_value:
                         config[k] = env_value
                         logger.debug(f"Injected env var: {env_var}")
                     else:
                         logger.warning(f"Environment variable not set: {env_var}")
+
                 else:
                     self._inject_env_vars(v)
+
         elif isinstance(config, list):
             for entry in config:
                 self._inject_env_vars(entry)
@@ -367,7 +402,10 @@ class ConfigManager:
             Example: ["hr_domain", "finance", "engineering"]
         """
         yaml_files = glob.glob(str(self.domain_dir / "*.yaml"))
-        names = [Path(f).stem for f in yaml_files]
+        names = [
+            Path(f).stem for f in yaml_files
+            if not Path(f).stem.endswith("_playground_temp")
+        ]
         logger.debug(f"Found {len(names)} domain configs: {names}")
         return names
 
@@ -456,7 +494,7 @@ class ConfigManager:
                 f"✅ Domain config loaded and validated: {domain_name}\n"
                 f"   Chunking: {config.chunking.strategy}\n"
                 f"   Embeddings: {config.embeddings.provider}\n"
-                f"   Vector Store: {config.vector_store.provider}\n"
+                f"   Vector Store: {config.vectorstore.provider}\n"
                 f"   Retrieval: {', '.join(config.retrieval.strategies)}"
             )
             return config
@@ -592,7 +630,7 @@ if __name__ == "__main__":
             print(f"Name: {config.name}")
             print(f"Chunking strategy: {config.chunking.strategy}")
             print(f"Embedding provider: {config.embeddings.provider}")
-            print(f"Vector store: {config.vector_store.provider}")
+            print(f"Vector store: {config.vectorstore.provider}")
             print(f"Retrieval strategies: {config.retrieval.strategies}")
 
         except FileNotFoundError as e:
@@ -621,8 +659,8 @@ provider = hr_config.embeddings.provider
 model_name = hr_config.embeddings.model_name
 
 # Vector store configuration
-vector_store_provider = hr_config.vector_store.provider
-collection_name = hr_config.vector_store.collection_name
+vectorstore_provider = hr_config.vectorstore.provider
+collection_name = hr_config.vectorstore.collection_name
 
 # Security configuration
 allowed_types = hr_config.security.allowed_file_types

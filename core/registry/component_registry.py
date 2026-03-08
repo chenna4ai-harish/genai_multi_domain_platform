@@ -8,7 +8,7 @@ class ComponentRegistry:
     @staticmethod
     def get_embedding_providers():
         return {
-            "sentencetransformers": ["all-MiniLM-L6-v2", "all-mpnet-base-v2"],
+            "sentence_transformers": ["all-MiniLM-L6-v2", "all-mpnet-base-v2"],
             "openai": ["text-embedding-ada-002"],
             "gemini": ["models/embedding-001"]
         }
@@ -34,7 +34,7 @@ class ComponentRegistry:
 
     @staticmethod
     def get_retrieval_strategies():
-        return ["hybrid", "vectorsimilarity", "bm25"]
+        return ["hybrid", "vector_similarity", "bm25"]
     @staticmethod
     def get_device_options():
         return ["cpu", "cuda", "mps"]

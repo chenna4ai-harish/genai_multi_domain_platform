@@ -1,75 +1,98 @@
-name: global_default
-description: Global defaults for RAG system
+# =============================================================================
+# global_config.yaml
+#
+# Global defaults for all domains.
+# Domain-specific configs (configs/domains/<name>.yaml) override these values.
+# Keys match the DomainConfig Pydantic schema in core/config_manager.py.
+# =============================================================================
 
+name: global_default
+description: "Global defaults — inherited by all domains unless overridden"
+
+# -----------------------------------------------------------------------------
+# Chunking
+# Supported strategies: recursive, semantic
+# -----------------------------------------------------------------------------
 chunking:
   strategy: recursive
-  chunk_size: 500
-  overlap: 50
+  recursive:
+    chunk_size: 500
+    overlap: 50
+  semantic:
+    similarity_threshold: 0.7
+    max_chunk_size: 1000
 
-embedding:
-  provider: Gemini
-  model_name: gemini-1.0-pro
-  api_key: "${GEMINI_API_KEY}"
-  mode: api_key
-  project_id: "${VERTEXAI_PROJECT_ID}"
+# -----------------------------------------------------------------------------
+# Embeddings
+# Supported providers: sentence_transformers, gemini, openai
+# Default: sentence_transformers (local, free, no API key required)
+# -----------------------------------------------------------------------------
+embeddings:
+  provider: sentence_transformers
+  model_name: all-MiniLM-L6-v2   # 384-dim, fast, good quality
+  device: cpu                     # cpu | cuda | mps
+  batch_size: 32
+  normalize: true
+  api_key: null                   # Required only for gemini/openai providers
 
+# -----------------------------------------------------------------------------
+# Retrieval
+# Supported strategies: hybrid, vector_similarity, bm25
+# -----------------------------------------------------------------------------
 retrieval:
   strategies:
-    - hybrid
-    - llm_rerank
-    - filtering
-  hybrid:
-    alpha: 0.7
-    dense_provider: sentence_transformers
-    sparse_provider: bm25
-  llm_rerank:
-    provider: openai
-    model_name: gpt-4o
-    api_key: "${OPENAI_API_KEY}"
-  filtering:
-    fields: ["author", "doc_type", "upload_date"]
-    rules:
-      author: ["alice", "bob"]
-      doc_type: ["policy", "faq"]
-      upload_date: ["2024-01-01:2024-12-31"]
+    - hybrid                      # Recommended: combines dense + sparse
   top_k: 10
+  similarity: cosine
+  hybrid:
+    alpha: 0.7                   # 0.7 = 70% semantic, 30% keyword
+    normalize_scores: true
 
+# -----------------------------------------------------------------------------
+# Vector Store
+# Supported providers: chromadb, pinecone
+# collection_name and persist_directory are overridden per-domain
+# -----------------------------------------------------------------------------
 vectorstore:
-  provider: ChromaDB
+  provider: chromadb
   index_type: hnsw
-  collection_name: default_collection
+  collection_name: default_collection      # Overridden by domain config
+  persist_directory: ./data/chromadb       # Overridden per domain
 
+# -----------------------------------------------------------------------------
+# LLM — for answer generation (RAG final step)
+# Supported providers: gemini, openai
+# Override per-domain in configs/domains/<name>.yaml
+# -----------------------------------------------------------------------------
+llm:
+  provider: gemini
+  model_name: gemini-1.5-flash
+  temperature: 0.2
+  max_tokens: 512
+  api_key: null                   # Loaded from GEMINI_API_KEY / OPENAI_API_KEY env var
+
+# -----------------------------------------------------------------------------
+# Security
+# -----------------------------------------------------------------------------
 security:
   allowed_file_types:
     - pdf
     - docx
     - txt
   max_file_size_mb: 20
+  require_authentication: false
 
-
-#
-#Define a core schema for metadata (e.g., via Pydantic or dataclass) listing standard fields:
-#
-#doc_id: Unique document ID
-#
-#chunk_id: Unique chunk ID
-#
-#title
-#
-#author
-#
-#domain
-#
-#doc_type
-#
-#tags
-#
-#upload_date
-#
-#source_file
-#
-#version
-#
-#deprecated (bool)
-#
-#deprecated_date (date)
+# -----------------------------------------------------------------------------
+# Metadata tracking
+# -----------------------------------------------------------------------------
+metadata:
+  track_versions: true
+  enable_deprecation: true
+  compute_file_hash: true
+  extract_page_numbers: true
+  required_fields:
+    - doc_id
+    - title
+    - domain
+    - doc_type
+    - uploader_id

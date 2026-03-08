@@ -82,7 +82,7 @@ with open("handbook.pdf", "rb") as f:
 results = service.query(
     query_text="vacation policy",
     strategy="hybrid",
-    metadata_filters={"doc_type": "policy", "deprecated": False},
+            metadata_filters={"doc_type": "policy", "deprecated_flag": False},
     top_k=5
 )
 
@@ -96,6 +96,8 @@ References:
 
 import logging
 import hashlib
+import tempfile
+import shutil
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from pathlib import Path
@@ -105,7 +107,9 @@ from core.pipeline.document_pipeline import DocumentPipeline
 from core.config_manager import ConfigManager
 
 # File processing utilities
-from core.utils.file_parsers import extract_text_from_file
+from core.utils.file_parsers.parser_factory import extract_text_from_file
+from core.utils.validation import validate_file_type
+from core.utils.hashing import compute_file_hash
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -291,13 +295,14 @@ class DocumentService:
         ValidationError:
             If required fields missing or empty
         """
-        # Phase 2 required fields (from spec Section 4.2)
-        required_fields = [
-            "doc_id",
-            "title",
-            "doc_type",
-            "uploader_id"
-        ]
+        # Derive required fields from domain config, excluding 'domain'
+        # (that field is auto-injected by the service, not supplied by the caller)
+        metadata_config = getattr(self.domain_config, 'metadata', None)
+        config_fields = getattr(metadata_config, 'required_fields', None) if metadata_config else None
+        if config_fields:
+            required_fields = [f for f in config_fields if f != 'domain']
+        else:
+            required_fields = ["doc_id", "title", "doc_type", "uploader_id"]
 
         missing = []
         empty = []
@@ -349,7 +354,6 @@ class DocumentService:
     # =========================================================================
     # PUBLIC API METHODS (Called by UI)
     # =========================================================================
-
     def upload_document(
             self,
             file_obj: Any,
@@ -359,158 +363,91 @@ class DocumentService:
         """
         Upload and process a document end-to-end.
 
-        This is the PRIMARY INGESTION METHOD called by the UI.
-
-        Workflow:
-        ---------
-        1. Validate file type (extension check)
-        2. Validate file size (max MB check)
-        3. Validate required metadata fields
-        4. Extract text from file (PDF, DOCX, TXT)
-        5. Compute file hash (SHA-256 for provenance)
-        6. Enrich metadata with system fields
-        7. Delegate to pipeline for processing
-        8. Return ingestion summary
-
-        Parameters:
-        -----------
-        file_obj : Any
-            File object with .name, .read(), .seek() attributes
-            Typically from Gradio: UploadedFile or similar
-
-        metadata : Dict[str, Any]
-            Metadata dictionary with required fields:
-            - doc_id: str (unique identifier)
-            - title: str (document title)
-            - doc_type: str (policy, faq, manual, etc.)
-            - uploader_id: str (user who uploaded)
-
-            Optional fields:
-            - author: str (original document author)
-            - version: str (document version, default: "1.0")
-
-        replace_existing : bool
-            If True, deletes existing document before ingestion
-            Default: False
-
-        Returns:
-        --------
-        Dict[str, Any]:
-            Ingestion summary with:
-            - doc_id: Document identifier
-            - chunks_ingested: Number of chunks created
-            - status: "success"
-            - embedding_model: Model name used
-            - chunking_strategy: Strategy used
-            - file_hash: SHA-256 hash
-
-        Raises:
-        -------
-        ValidationError:
-            If validation fails (file type, size, metadata)
-        ProcessingError:
-            If text extraction or pipeline processing fails
-
-        Example:
-        --------
-        # In UI handler:
-        def upload_handler(file, title, author, doc_type):
-            service = DocumentService("hr")
-
-            try:
-                result = service.upload_document(
-                    file_obj=file,
-                    metadata={
-                        "doc_id": f"hr_doc_{datetime.now().timestamp()}",
-                        "title": title,
-                        "author": author,
-                        "doc_type": doc_type,
-                        "uploader_id": "current_user@company.com"
-                    },
-                    replace_existing=True
-                )
-                return f"✅ Success! Ingested {result['chunks_ingested']} chunks"
-            except ValidationError as e:
-                return f"❌ Validation Error: {e}"
-            except ProcessingError as e:
-                return f"❌ Processing Error: {e}"
+        Steps:
+        1. Validate file type
+        2. Save file object to temp file (parsers need file path!)
+        3. Extract text using parser_factory
+        4. Compute hash
+        5. Process via pipeline
+        6. Cleanup temp file
         """
-        logger.info(
-            f"Upload request: doc_id={metadata.get('doc_id')}, "
-            f"domain={self.domain_id}"
-        )
+        logger.info(f"Upload request: doc_id={metadata.get('doc_id')}, domain={self.domain_id}")
 
-        # Step 1: Validate file has name attribute
+        # Get filename from file object
         filename = getattr(file_obj, 'name', None)
         if not filename:
-            raise ValidationError("Uploaded file missing 'name' attribute")
+            raise ValidationError("File object missing 'name' attribute")
 
-        # Step 2: Validate file type
-        self._validate_file_type(filename)
-
-        # Step 3: Validate file size
-        self._validate_file_size(file_obj)
-
-        # Step 4: Validate required metadata
+        # Validate metadata required fields (fail fast, before any file I/O)
         self._validate_metadata(metadata)
 
-        # Step 5: Extract text from file
-        logger.info(f"Extracting text from file: {filename}")
+        # Validate file type
+        validate_file_type(filename, self.allowed_file_types)
+        logger.debug(f"✅ File type validated: {filename}")
+
+        tmp_path = None
         try:
-            extracted_data = extract_text_from_file(file_obj, filename)
-            text = extracted_data.get('text', '')
+            # Step 1: Save to temporary file (parsers need file path!)
+            file_ext = Path(filename).suffix
+            with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+                tmp_path = tmp_file.name
+                file_obj.seek(0)  # Reset file pointer
+                shutil.copyfileobj(file_obj, tmp_file)
 
-            if not text or not text.strip():
-                raise ProcessingError(f"No text could be extracted from file: {filename}")
+            logger.debug(f"Saved temporary file: {tmp_path}")
 
+            # Step 2: Extract text
+            text = extract_text_from_file(tmp_path)
             logger.info(f"✅ Extracted {len(text)} characters from {filename}")
 
-        except Exception as e:
-            logger.error(f"Text extraction failed for {filename}: {e}")
-            raise ProcessingError(f"Failed to extract text from file: {e}")
+            if not text or len(text.strip()) < 10:
+                raise ProcessingError(f"No meaningful text extracted from {filename}")
 
-        # Step 6: Compute file hash for provenance
-        file_hash = self._compute_file_hash(file_obj)
+            # Step 3: Compute file hash
+            file_obj.seek(0)  # Reset again for hashing
+            file_hash = compute_file_hash(file_obj)
+            logger.debug(f"Computed file hash: {file_hash[:16]}...")
 
-        # Step 7: Enrich metadata with system fields
-        enriched_metadata = {
-            **metadata,  # User-provided fields
-            "domain": self.domain_id,  # Enforce domain
-            "source_file_path": filename,
-            "file_hash": file_hash,
-            "upload_timestamp": datetime.utcnow().isoformat(),
-            "version": metadata.get("version", "1.0"),
-            "author": metadata.get("author", "Unknown")
-        }
+            # Step 4: Enrich metadata
+            enriched_metadata = {
+                **metadata,
+                "source_file": Path(filename).name,
+                "source_file_hash": file_hash,
+                "upload_timestamp": datetime.utcnow().isoformat(),
+                "domain": self.domain_id,
+            }
 
-        # Step 8: Delegate to pipeline for processing
-        logger.info(f"Delegating to pipeline: doc_id={metadata['doc_id']}")
-        try:
+            # Step 5: Process via pipeline
             result = self.pipeline.process_document(
                 text=text,
                 doc_id=enriched_metadata["doc_id"],
-                domain=self.domain_id,
-                source_file_path=filename,
-                file_hash=file_hash,
-                uploader_id=enriched_metadata["uploader_id"],
+                domain=enriched_metadata["domain"],
+                source_file_path=enriched_metadata["source_file"],
+                file_hash=enriched_metadata["source_file_hash"],
+                uploader_id=enriched_metadata.get("uploader_id"),
                 title=enriched_metadata.get("title"),
-                doc_type=enriched_metadata.get("doc_type"),
-                author=enriched_metadata.get("author"),
-                version=enriched_metadata.get("version"),
+                doc_type=enriched_metadata.get("doc_type", "document"),
                 replace_existing=replace_existing
             )
-
-            # Add file_hash to result
-            result['file_hash'] = file_hash
 
             logger.info(f"✅ Upload successful: {result}")
             return result
 
+        except ValidationError:
+            raise  # Re-raise validation errors as-is
+
         except Exception as e:
-            logger.exception(
-                f"Pipeline processing failed for doc_id={metadata.get('doc_id')}"
-            )
-            raise ProcessingError(f"Document processing failed: {e}")
+            logger.exception(f"Upload failed for {filename}: {e}")
+            raise ProcessingError(f"Failed to process document: {e}")
+
+        finally:
+            # Step 6: Cleanup temp file
+            if tmp_path:
+                try:
+                    Path(tmp_path).unlink(missing_ok=True)
+                    logger.debug(f"Cleaned up temp file: {tmp_path}")
+                except Exception as cleanup_err:
+                    logger.warning(f"Failed to cleanup temp file: {cleanup_err}")
 
     def query(
             self,
@@ -582,7 +519,7 @@ class DocumentService:
         if not include_deprecated:
             if metadata_filters is None:
                 metadata_filters = {}
-            metadata_filters['deprecated'] = False
+            metadata_filters['deprecated_flag'] = False
 
         # Delegate to pipeline
         try:
@@ -662,21 +599,79 @@ class DocumentService:
             logger.exception(f"Failed to get document info: {doc_id}")
             raise DocumentNotFoundError(f"Document not found: {doc_id}")
 
+    def deprecate_document(
+        self,
+        doc_id: str,
+        reason: str,
+        superseded_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Mark all chunks of a document as deprecated.
+
+        Parameters:
+        -----------
+        doc_id : str
+            Document identifier to deprecate
+        reason : str
+            Human-readable reason (e.g. "Superseded by handbook_2025")
+        superseded_by : str, optional
+            doc_id of the replacement document
+
+        Returns:
+        --------
+        Dict[str, Any]:
+            Deprecation summary: { doc_id, chunks_deprecated, deprecated_date, reason }
+
+        Raises:
+        -------
+        ValidationError:
+            If doc_id or reason is missing
+        DocumentNotFoundError:
+            If no document found with that doc_id
+        ProcessingError:
+            For other failures
+        """
+        if not doc_id:
+            raise ValidationError("doc_id is required for deprecate_document()")
+        if not reason:
+            raise ValidationError("reason is required for deprecate_document()")
+
+        logger.info(
+            f"Deprecate request: doc_id={doc_id}, domain={self.domain_id}, reason={reason}"
+        )
+
+        try:
+            result = self.pipeline.deprecate_document(
+                doc_id=doc_id,
+                reason=reason,
+                superseded_by=superseded_by,
+            )
+            logger.info(f"✅ Deprecated document: {doc_id} ({result['chunks_deprecated']} chunks)")
+            return result
+
+        except ValueError as e:
+            raise DocumentNotFoundError(str(e))
+
+        except Exception as e:
+            logger.exception(f"Deprecation failed for doc_id={doc_id}")
+            raise ProcessingError(f"Failed to deprecate document: {e}")
+
     def query_with_answer(
         self,
         query_text: str,
-        config: dict | None = None,
+        config: Optional[Dict] = None,
         *,
-        top_k: int | None = None,
-        alpha: float | None = None,
-        llm_provider: str | None = None,
-        llm_model: str | None = None,
-        temperature: float | None = None,
-        max_tokens: int | None = None,
-        filters: dict | None = None,
-    ) -> dict:
+        top_k: Optional[int] = None,
+        strategy: Optional[str] = None,
+        llm_provider: Optional[str] = None,
+        llm_model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+        include_deprecated: bool = False,
+    ) -> Dict[str, Any]:
         """
-        High-level Playground entrypoint.
+        High-level Playground entrypoint: retrieval + LLM answer generation.
 
         Returns:
             {
@@ -689,41 +684,63 @@ class DocumentService:
         if not query_text or not query_text.strip():
             raise ValueError("query_text is required")
 
-        # 1) Build retrieval params (merge config defaults + overrides)
+        # 1) Build retrieval params
         retrieval_cfg = (config or {}).get("retrieval", {})
         effective_top_k = top_k or retrieval_cfg.get("top_k", 5)
-        effective_alpha = alpha if alpha is not None else retrieval_cfg.get("alpha", 0.5)
+        effective_strategy = strategy or retrieval_cfg.get("strategy", None)
 
-        # 2) Run retrieval via pipeline
-        retrieval_result = self.pipeline.query(
+        # 2) Filter deprecated docs unless requested
+        filters = dict(metadata_filters or {})
+        if not include_deprecated:
+            filters.setdefault("deprecated_flag", False)
+
+        # 3) Run retrieval via pipeline (returns List[dict])
+        results: List[Dict[str, Any]] = self.pipeline.query(
             query_text=query_text,
+            strategy_name=effective_strategy,
+            metadata_filters=filters if filters else None,
             top_k=effective_top_k,
-            alpha=effective_alpha,
-            filters=filters or {},
         )
 
-        # Expect something like:
-        # retrieval_result = {
-        #   "results": List[dict],   # each has doc_id, score, text, metadata...
-        #   "timings": {...},
-        #   "strategy": "...",
-        # }
+        # 4) Build context from retrieved chunks
+        context_chunks = [r.get("document", "") for r in results]
 
-        results = retrieval_result.get("results", [])
-        timings = retrieval_result.get("timings", {})
-        strategy = retrieval_result.get("strategy", "default")
+        # 5) Resolve LLM config
+        #    Priority: explicit params > config dict arg > domain config > hardcoded defaults
+        llm_cfg = (config or {}).get("llm", {})
+        domain_llm = getattr(self.domain_config, "llm", None)
+        provider = (
+            llm_provider
+            or llm_cfg.get("provider")
+            or (domain_llm.provider if domain_llm else None)
+            or "gemini"
+        )
+        model = (
+            llm_model
+            or llm_cfg.get("model_name")
+            or (domain_llm.model_name if domain_llm else None)
+            or "gemini-1.5-flash"
+        )
+        # Use explicit None checks to avoid treating 0.0 / 0 as falsy
+        if temperature is not None:
+            temp = temperature
+        elif llm_cfg.get("temperature") is not None:
+            temp = llm_cfg["temperature"]
+        elif domain_llm is not None:
+            temp = domain_llm.temperature
+        else:
+            temp = 0.2
 
-        # 3) Build LLM request input from results
-        context_chunks = [r.get("text", "") for r in results]
+        if max_tokens is not None:
+            max_toks = max_tokens
+        elif llm_cfg.get("max_tokens") is not None:
+            max_toks = llm_cfg["max_tokens"]
+        elif domain_llm is not None:
+            max_toks = domain_llm.max_tokens
+        else:
+            max_toks = 512
 
-        # 4) Resolve LLM config
-        llm_cfg = (config or {}).get("llm_rerank", {})
-        provider = llm_provider or llm_cfg.get("provider", "openai")
-        model = llm_model or llm_cfg.get("model_name", "gpt-4.1-mini")
-        temp = temperature if temperature is not None else llm_cfg.get("temperature", 0.2)
-        max_toks = max_tokens or llm_cfg.get("max_tokens", 512)
-
-        # 5) Call LLM (you’ll plug into your own LLM client here)
+        # 6) Generate answer with LLM
         answer, confidence = self._generate_answer_with_llm(
             query_text=query_text,
             context_chunks=context_chunks,
@@ -733,28 +750,24 @@ class DocumentService:
             max_tokens=max_toks,
         )
 
-        # 6) Shape sources for UI
+        # 7) Shape sources for UI
         sources = []
         for r in results:
             meta = r.get("metadata", {}) or {}
             sources.append(
                 {
                     "doc_id": meta.get("doc_id"),
-                    "title": meta.get("title") or meta.get("file_name"),
-                    "page": meta.get("page"),
+                    "title": meta.get("title") or meta.get("source_file"),
+                    "page": meta.get("page_num"),
                     "score": float(r.get("score", 0.0)),
-                    "snippet": r.get("text", "")[:400],
+                    "snippet": r.get("document", "")[:400],
                 }
             )
 
-        # 7) Trace for Trace tab
+        # 8) Trace for debugging
         trace = {
-            "strategy": strategy,
-            "params": {
-                "top_k": effective_top_k,
-                "alpha": effective_alpha,
-            },
-            "timings": timings,
+            "strategy": effective_strategy or "all",
+            "params": {"top_k": effective_top_k},
             "raw_results_count": len(results),
         }
 
@@ -764,6 +777,74 @@ class DocumentService:
             "sources": sources,
             "trace": trace,
         }
+
+    def _generate_answer_with_llm(
+        self,
+        query_text: str,
+        context_chunks: List[str],
+        provider: str = "gemini",
+        model: str = "gemini-1.5-flash",
+        temperature: float = 0.2,
+        max_tokens: int = 512,
+    ) -> tuple:
+        """
+        Generate a grounded answer from retrieved context using an LLM.
+
+        Returns (answer: str, confidence: float | None).
+        """
+        context = "\n\n---\n\n".join(context_chunks) if context_chunks else "No context available."
+
+        prompt = (
+            f"You are a helpful assistant. Answer the question using ONLY the context below.\n"
+            f"If the context does not contain the answer, say ‘I don’t have enough information’.\n\n"
+            f"Context:\n{context}\n\n"
+            f"Question: {query_text}\n\n"
+            f"Answer:"
+        )
+
+        try:
+            if provider == "gemini":
+                import google.generativeai as genai
+                import os
+                api_key = os.environ.get("GEMINI_API_KEY")
+                if not api_key:
+                    raise ValueError("GEMINI_API_KEY environment variable not set")
+                genai.configure(api_key=api_key)
+                llm = genai.GenerativeModel(model)
+                response = llm.generate_content(
+                    prompt,
+                    generation_config=genai.GenerationConfig(
+                        temperature=temperature,
+                        max_output_tokens=max_tokens,
+                    ),
+                )
+                answer = response.text.strip()
+                return answer, None
+
+            elif provider == "openai":
+                import openai
+                import os
+                api_key = os.environ.get("OPENAI_API_KEY")
+                if not api_key:
+                    raise ValueError("OPENAI_API_KEY environment variable not set")
+                client = openai.OpenAI(api_key=api_key)
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                answer = response.choices[0].message.content.strip()
+                return answer, None
+
+            else:
+                raise ValueError(
+                    f"Unsupported LLM provider: ‘{provider}’. Supported: gemini, openai"
+                )
+
+        except Exception as e:
+            logger.exception(f"LLM answer generation failed: {e}")
+            return f"[LLM error: {e}]", None
 
     def list_documents(
         self,
@@ -776,7 +857,7 @@ class DocumentService:
         ----------
         filters : Dict[str, Any], optional
             Document-level filters (equality)
-            Example: {"deprecated": False, "doc_type": "policy"}
+            Example: {"deprecated_flag": False, "doc_type": "policy"}
 
         Returns
         -------
@@ -870,19 +951,20 @@ class DocumentService:
         query_text: str,
         *,
         top_k: int = 10,
-        alpha: float = 0.5,
-        filters: dict | None = None,
-    ) -> dict:
+        strategy: Optional[str] = None,
+        metadata_filters: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         """
-        Just retrieval, no LLM – for debugging.
+        Retrieval only, no LLM — for debugging and inspection.
+
+        Returns the raw list of retrieved chunks from the pipeline.
         """
-        result = self.pipeline.query(
+        return self.pipeline.query(
             query_text=query_text,
+            strategy_name=strategy,
+            metadata_filters=metadata_filters,
             top_k=top_k,
-            alpha=alpha,
-            filters=filters or {},
         )
-        return result
 
 # =============================================================================
 # USAGE EXAMPLES

@@ -18,7 +18,7 @@ from datetime import datetime
 import logging
 
 from core.config_manager import ConfigManager
-from core.vector_store import VectorStore
+from core.vectorstore import VectorStore
 from core.embeddings import EmbeddingGenerator
 from utils.pdf_processor import PDFProcessor
 from models.domain_config import MergedDomainConfig
@@ -48,7 +48,7 @@ class DocumentPipeline:
         self.config_manager = config_manager
 
         # Initialize components (will be created per domain)
-        self.vector_store = None
+        self.vectorstore = None
         self.embedder = None
         self.pdf_processor = None
 
@@ -64,8 +64,8 @@ class DocumentPipeline:
         logger.info(f"Initializing components for domain: {domain_config.domain.name}")
 
         # Create vector store (shared across domains)
-        if self.vector_store is None:
-            self.vector_store = VectorStore(domain_config.vector_store)
+        if self.vectorstore is None:
+            self.vectorstore = VectorStore(domain_config.vectorstore)
 
         # Create embedder (domain-specific if embeddings differ)
         self.embedder = EmbeddingGenerator(domain_config.embeddings)
@@ -90,10 +90,10 @@ class DocumentPipeline:
         Returns:
             List of existing version info
         """
-        if self.vector_store is None:
+        if self.vectorstore is None:
             return []
 
-        versions = self.vector_store.get_document_versions(collection_name, document_id)
+        versions = self.vectorstore.get_document_versions(collection_name, document_id)
 
         if versions:
             logger.info(f"Found {len(versions)} existing versions for {document_id}")
@@ -122,7 +122,7 @@ class DocumentPipeline:
         logger.info(f"Checking for duplicates (threshold={threshold})")
 
         try:
-            results = self.vector_store.search(
+            results = self.vectorstore.search(
                 collection_name=collection_name,
                 query_embedding=document_embedding,
                 top_k=1
@@ -220,7 +220,7 @@ class DocumentPipeline:
             if replace_versions:
                 logger.info(f"Step 6/7: Deleting {len(replace_versions)} old versions...")
                 for old_version in replace_versions:
-                    deleted = self.vector_store.delete_by_document_id(
+                    deleted = self.vectorstore.delete_by_document_id(
                         collection_name=collection_name,
                         document_id=document_id,
                         version=old_version
@@ -260,7 +260,7 @@ class DocumentPipeline:
                 metadatas.append(chunk_metadata)
 
             # Upsert
-            upsert_stats = self.vector_store.upsert_documents(
+            upsert_stats = self.vectorstore.upsert_documents(
                 collection_name=collection_name,
                 chunk_ids=chunk_ids,
                 embeddings=embeddings,
@@ -334,11 +334,11 @@ class DocumentPipeline:
             collection_name = domain_config.domain.collection_name
 
             # Initialize vector store if needed
-            if self.vector_store is None:
-                self.vector_store = VectorStore(domain_config.vector_store)
+            if self.vectorstore is None:
+                self.vectorstore = VectorStore(domain_config.vectorstore)
 
             # Delete
-            chunks_deleted = self.vector_store.delete_by_document_id(
+            chunks_deleted = self.vectorstore.delete_by_document_id(
                 collection_name=collection_name,
                 document_id=document_id,
                 version=version
@@ -389,11 +389,11 @@ class DocumentPipeline:
             collection_name = domain_config.domain.collection_name
 
             # Initialize vector store if needed
-            if self.vector_store is None:
-                self.vector_store = VectorStore(domain_config.vector_store)
+            if self.vectorstore is None:
+                self.vectorstore = VectorStore(domain_config.vectorstore)
 
             # List documents
-            documents = self.vector_store.list_documents(collection_name, filters)
+            documents = self.vectorstore.list_documents(collection_name, filters)
 
             logger.info(f"Found {len(documents)} documents")
             return documents

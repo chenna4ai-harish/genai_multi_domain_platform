@@ -51,7 +51,7 @@ This follows the Repository Pattern + Adapter Pattern:
 Example Usage:
 --------------
 # Factory creates the right vector store based on config
-store: VectorStoreInterface = VectorStoreFactory.create_store(config)
+store: VectorStoreInterface = VectorStoreFactory.create_vectorstore(config)
 
 # Caller doesn't care if it's ChromaDB or Pinecone!
 store.upsert(chunks, embeddings)
@@ -585,25 +585,25 @@ class VectorStoreInterface(ABC):
         Use Cases:
         ----------
         1. **Building BM25 Index for Hybrid Retrieval**:
-           corpus, doc_ids = vector_store.get_all_documents()
+           corpus, doc_ids = vectorstore.get_all_documents()
            bm25_index = BM25Retrieval(corpus=corpus, doc_ids=doc_ids)
 
            # Now use hybrid retrieval
            hybrid_retriever = HybridRetrieval(
-               vector_store=vector_store,
+               vectorstore=vectorstore,
                embedding_model=embedder,
                bm25_index=bm25_index,
                alpha=0.7  # 70% dense, 30% sparse
            )
 
         2. **Analytics and Monitoring**:
-           corpus, _ = vector_store.get_all_documents()
+           corpus, _ = vectorstore.get_all_documents()
            total_chunks = len(corpus)
            avg_length = sum(len(text) for text in corpus) / total_chunks
            print(f"Total chunks: {total_chunks}, Avg length: {avg_length}")
 
         3. **Data Export/Backup**:
-           corpus, doc_ids = vector_store.get_all_documents()
+           corpus, doc_ids = vectorstore.get_all_documents()
            # Export to file for backup or analysis
 
         Implementation Guidelines:
@@ -677,11 +677,11 @@ class VectorStoreInterface(ABC):
         Example Usage:
         --------------
         # Initialize hybrid retrieval for Phase 2
-        vector_store = VectorStoreFactory.create_store(config, embedding_dim, metadata_fields)
+        vectorstore = VectorStoreFactory.create_vectorstore(config, embedding_dim, metadata_fields)
         embedder = EmbeddingFactory.create_embedder(embedding_config)
 
         # Build BM25 index from vector store corpus
-        corpus, doc_ids = vector_store.get_all_documents()
+        corpus, doc_ids = vectorstore.get_all_documents()
         print(f"Corpus size: {len(corpus)} chunks")
 
         # Create BM25 index
@@ -689,7 +689,7 @@ class VectorStoreInterface(ABC):
 
         # Create hybrid retriever (combines vector + BM25)
         hybrid_retriever = HybridRetrieval(
-            vector_store=vector_store,
+            vectorstore=vectorstore,
             embedding_model=embedder,
             bm25_index=bm25_index,
             alpha=0.7
@@ -707,6 +707,45 @@ class VectorStoreInterface(ABC):
         """
         pass  # Subclasses MUST implement this method
 
+    @abstractmethod
+    def count(self) -> int:
+        """
+        Return the total number of vectors currently stored in this collection.
+
+        Used by the pipeline to check corpus size before building BM25 indexes
+        and by the domain service to report collection statistics.
+
+        Returns:
+        --------
+        int:
+            Total chunk (vector) count. 0 for an empty collection.
+        """
+        pass  # Subclasses MUST implement this method
+
+    @abstractmethod
+    def update_document_metadata(self, doc_id: str, updates: Dict[str, Any]) -> int:
+        """
+        Merge `updates` into the existing metadata of every chunk that belongs
+        to `doc_id`.
+
+        Used by the pipeline to implement the deprecation workflow without
+        leaking ChromaDB-specific internals (`.collection`) into higher layers.
+
+        Parameters:
+        -----------
+        doc_id : str
+            The document whose chunks should be updated.
+        updates : Dict[str, Any]
+            Key-value pairs to merge into each chunk's metadata.
+            Existing keys are overwritten; other keys are preserved.
+
+        Returns:
+        --------
+        int:
+            Number of chunks updated. 0 if `doc_id` was not found.
+        """
+        pass  # Subclasses MUST implement this method
+
 
 # =============================================================================
 # USAGE NOTES FOR IMPLEMENTERS
@@ -719,7 +758,7 @@ How to Implement a New Vector Store Provider:
 1. Create a new file: core/vectorstores/my_store.py
 
 2. Import the interface:
-   from core.interfaces.vector_store_interface import VectorStoreInterface
+   from core.interfaces.vectorstore_interface import VectorStoreInterface
    from models.metadata_models import ChunkMetadata
    import numpy as np
 
@@ -747,7 +786,7 @@ How to Implement a New Vector Store Provider:
            # Your corpus retrieval implementation (for BM25)
            pass
 
-4. Register in factory: core/factories/vector_store_factory.py
+4. Register in factory: core/factories/vectorstore_factory.py
 
    elif config.provider == "my_store":
        return MyVectorStore(
@@ -766,7 +805,7 @@ How to Implement a New Vector Store Provider:
        my_store: Optional[MyStoreConfig] = None
 
 6. Use in YAML:
-   vector_store:
+   vectorstore:
      provider: "my_store"
      my_store:
        connection_string: "http://localhost:8000"

@@ -85,13 +85,14 @@ References:
 """
 
 import logging
+import numpy as np
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 # Import factories (ONLY factories, never concrete implementations!)
 from core.factories.chunking_factory import ChunkingFactory
 from core.factories.embedding_factory import EmbeddingFactory
-from core.factories.vector_store_factory import VectorStoreFactory
+from core.factories.vectorstore_factory import VectorStoreFactory
 from core.factories.retrieval_factory import RetrievalFactory
 
 # Import interfaces and models
@@ -100,6 +101,7 @@ from core.interfaces.embedding_interface import EmbeddingInterface
 from core.interfaces.vectorstore_interface import VectorStoreInterface
 from core.interfaces.retrieval_interface import RetrievalInterface
 from models.metadata_models import ChunkMetadata
+
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -118,18 +120,17 @@ class DocumentPipeline:
     All components are created from domain configuration using factories.
     No direct instantiation of concrete classes!
     """
-
     def __init__(self, domain_config: Any):
         """
         Initialize pipeline with domain configuration.
-
+    
         This method:
         1. Stores domain config
         2. Creates embedding model via factory
         3. Creates chunker via factory (needs embedding model name)
         4. Creates vector store via factory (needs embedding dimension)
         5. Creates retrieval strategies via factory
-
+    
         Parameters:
         -----------
         domain_config : Any
@@ -137,9 +138,9 @@ class DocumentPipeline:
             Must contain:
             - embeddings: Embedding provider config
             - chunking: Chunking strategy config
-            - vector_store: Vector store config
+            - vectorstore: Vector store config
             - retrieval: Retrieval strategies config (optional)
-
+    
         Raises:
         -------
         ValueError:
@@ -149,32 +150,30 @@ class DocumentPipeline:
         """
         self.config = domain_config
         self.domain_id = getattr(domain_config, 'domain_id', 'default')
-
+        
         logger.info(f"Initializing DocumentPipeline for domain: {self.domain_id}")
-
+    
         # Step 1: Create embedding model (needed first for dimension)
         logger.debug("Creating embedding model via EmbeddingFactory...")
         self.embedding_model: EmbeddingInterface = EmbeddingFactory.create_embedder(
             config=self.config.embeddings  # Note: 'embeddings' not 'embedding'
         )
-
+        
         embedding_model_name = self.embedding_model.get_model_name()
         embedding_dimension = self.embedding_model.get_embedding_dimension()
-
         logger.info(
             f"✅ Embedding model created: {embedding_model_name} "
             f"({embedding_dimension}-dim)"
         )
-
+    
         # Step 2: Create chunker (needs embedding model name for metadata)
         logger.debug("Creating chunker via ChunkingFactory...")
         self.chunker: ChunkerInterface = ChunkingFactory.create_chunker(
             config=self.config.chunking,
             embedding_model_name=embedding_model_name
         )
-
         logger.info(f"✅ Chunker created: {self.config.chunking.strategy}")
-
+    
         # Step 3: Define metadata fields schema
         self.metadata_fields = [
             # Identity
@@ -188,27 +187,24 @@ class DocumentPipeline:
             "embedding_model_name", "embedding_dimension",
             "chunking_strategy", "chunking_params", "processing_timestamp",
             # Lifecycle
-            "deprecated", "deprecated_date", "deprecation_reason",
+            "deprecated_flag", "deprecated_date", "deprecation_reason",
             # Quality
             "authority_level", "review_status", "confidence_score",
             # Content
             "page_num", "char_range", "chunk_text"
         ]
-
+    
         # Step 4: Create vector store (needs dimension and metadata schema)
         logger.debug("Creating vector store via VectorStoreFactory...")
-        self.vector_store: VectorStoreInterface = VectorStoreFactory.create_store(
-            config=self.config.vector_store,
-            embedding_dimension=embedding_dimension,
-            metadata_fields=self.metadata_fields
+        self.vectorstore: VectorStoreInterface = VectorStoreFactory.create_vectorstore(
+            config=self.config.vectorstore
         )
-
-        logger.info(f"✅ Vector store created: {self.config.vector_store.provider}")
-
+        logger.info(f"✅ Vector store created: {self.config.vectorstore.provider}")
+    
         # Step 5: Create retrieval strategies
         logger.debug("Creating retrieval strategies via RetrievalFactory...")
         self.retrieval_strategies = self._init_retrieval_strategies()
-
+        
         logger.info(
             f"✅ DocumentPipeline initialized for domain '{self.domain_id}' "
             f"with {len(self.retrieval_strategies)} retrieval strategies"
@@ -219,60 +215,99 @@ class DocumentPipeline:
         Initialize all configured retrieval strategies.
 
         Creates retriever instances for each strategy in config.
-        Supports: vector_similarity, hybrid, bm25, etc.
+        Supports: vector_similarity, hybrid, bm25.
 
         Returns:
         --------
         Dict[str, RetrievalInterface]:
             Dictionary mapping strategy name to retriever instance
-            Example: {"hybrid": HybridRetrieval(...), "vector_similarity": VectorSimilarityRetrieval(...)}
         """
         retrieval_config = getattr(self.config, 'retrieval', None)
+
         if not retrieval_config:
             logger.warning("No retrieval config found, using default vector_similarity")
-            retrieval_config = {"strategies": ["vector_similarity"]}
+            strategies = ["vector_similarity"]
+        else:
+            strategies = list(getattr(retrieval_config, 'strategies', ["vector_similarity"]))
+            if isinstance(strategies, str):
+                strategies = [strategies]
 
-        # Get list of strategies to initialize
-        strategies = getattr(retrieval_config, 'strategies', ["vector_similarity"])
-        if isinstance(strategies, str):
-            strategies = [strategies]
+        logger.info(f"Initializing retrieval strategies: {strategies}")
 
-        retrievers = {}
-        bm25_index = None  # Shared BM25 index for hybrid retrieval
+        # Skip BM25/hybrid when the corpus is empty (factory would raise anyway,
+        # but we skip early to avoid a noisy error log on a fresh domain).
+        try:
+            if self.vectorstore.count() == 0:
+                logger.warning("Vector store is empty — skipping BM25/hybrid strategies.")
+                strategies = [s for s in strategies if s not in ('bm25', 'hybrid')]
+                if not strategies:
+                    strategies = ['vector_similarity']
+        except Exception as e:
+            logger.warning(f"Could not check corpus size: {e}")
+
+        retrievers: Dict[str, RetrievalInterface] = {}
+        failed_strategies = []
 
         for strategy_name in strategies:
             try:
-                # Get strategy-specific config
-                strategy_config = getattr(retrieval_config, strategy_name, {})
-                if isinstance(strategy_config, dict):
-                    strategy_config['strategy'] = strategy_name
-
-                # Build BM25 index if needed (for hybrid/bm25 strategies)
-                if strategy_name in ["hybrid", "bm25"] and bm25_index is None:
-                    logger.info("Building BM25 index for sparse retrieval...")
-                    # BM25 index built by factory from vector store corpus
-                    bm25_index = None  # Factory will build it
-
-                # Create retriever via factory
+                logger.debug(f"Creating retriever for strategy: {strategy_name}")
+                # BM25 index building is now fully inside RetrievalFactory
                 retriever = RetrievalFactory.create_retriever(
-                    config=strategy_config,
-                    vector_store=self.vector_store,
+                    strategy_name=strategy_name,
+                    config=self.config,
+                    vectorstore=self.vectorstore,
                     embedding_model=self.embedding_model,
-                    bm25_index=bm25_index
                 )
-
                 retrievers[strategy_name] = retriever
                 logger.info(f"✅ Loaded retrieval strategy: {strategy_name}")
 
             except Exception as e:
-                logger.error(f"Failed to initialize strategy '{strategy_name}': {e}")
-                # Continue with other strategies instead of failing completely
-                continue
+                logger.error(
+                    f"❌ Failed to initialize strategy '{strategy_name}': "
+                    f"{type(e).__name__}: {e}"
+                )
+                failed_strategies.append((strategy_name, str(e)))
 
+        # Fallback to vector_similarity if nothing else worked
         if not retrievers:
-            raise RuntimeError("Failed to initialize any retrieval strategies")
+            logger.warning("All strategies failed — attempting vector_similarity fallback...")
+            try:
+                retriever = RetrievalFactory.create_retriever(
+                    strategy_name="vector_similarity",
+                    config=self.config,
+                    vectorstore=self.vectorstore,
+                    embedding_model=self.embedding_model,
+                )
+                retrievers["vector_similarity"] = retriever
+                logger.info("✅ Fallback to vector_similarity successful")
+            except Exception as e:
+                error_msg = "Failed to initialize any retrieval strategies:\n"
+                for strategy, error in failed_strategies:
+                    error_msg += f"  - {strategy}: {error}\n"
+                error_msg += f"  - vector_similarity (fallback): {e}\n"
+                raise RuntimeError(error_msg)
+
+        if failed_strategies:
+            logger.warning(f"Some strategies failed: {[s for s, _ in failed_strategies]}")
 
         return retrievers
+
+    def _refresh_retrieval_strategies(self) -> None:
+        """
+        Rebuild all retrieval strategies after the corpus changes (upload or delete).
+
+        The BM25 / hybrid indexes are built from a snapshot of the vector store
+        at init time.  Call this after any write operation so that all strategies
+        reflect the current corpus.
+        """
+        logger.info(f"Refreshing retrieval strategies for domain: {self.domain_id}")
+        self.retrieval_strategies = self._init_retrieval_strategies()
+        logger.info(
+            f"✅ Retrieval strategies refreshed "
+            f"({len(self.retrieval_strategies)} active: "
+            f"{list(self.retrieval_strategies.keys())})"
+        )
+
 
     def process_document(
             self,
@@ -366,7 +401,7 @@ class DocumentPipeline:
         if replace_existing:
             logger.info(f"Deleting existing chunks for doc_id: {doc_id}")
             try:
-                self.vector_store.delete_by_doc_id(doc_id)
+                self.vectorstore.delete_by_doc_id(doc_id)
                 logger.info(f"✅ Deleted existing chunks for doc_id: {doc_id}")
             except Exception as e:
                 logger.warning(f"No existing chunks to delete: {e}")
@@ -397,7 +432,6 @@ class DocumentPipeline:
 
         # Step 4: Embed chunks
         logger.info(f"Embedding {len(chunk_texts)} chunks...")
-        import numpy as np
         embeddings: np.ndarray = self.embedding_model.embed_texts(chunk_texts)
 
         logger.info(f"✅ Generated embeddings: shape={embeddings.shape}")
@@ -408,11 +442,14 @@ class DocumentPipeline:
 
         # Step 6: Upsert to vector store
         logger.info(f"Upserting {len(chunks)} chunks to vector store...")
-        self.vector_store.upsert(chunks=chunks, embeddings=embeddings)
+        self.vectorstore.upsert(chunks=chunks, embeddings=embeddings)
 
         logger.info(f"✅ Successfully upserted {len(chunks)} chunks for doc_id: {doc_id}")
 
-        # Step 7: Return summary
+        # Step 7: Refresh BM25/hybrid indexes so the new chunks are searchable
+        self._refresh_retrieval_strategies()
+
+        # Step 8: Return summary
         return {
             "doc_id": doc_id,
             "chunks_ingested": len(chunks),
@@ -558,6 +595,68 @@ class DocumentPipeline:
         # Sort by score descending
         return sorted(seen.values(), key=lambda x: x.get('score', 0), reverse=True)
 
+    def deprecate_document(
+        self,
+        doc_id: str,
+        reason: str,
+        superseded_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Mark all chunks of a document as deprecated in the vector store.
+
+        Updates metadata fields on every chunk:
+          - deprecated → True
+          - deprecated_date → current UTC timestamp
+          - deprecation_reason → reason string
+          - superseded_by_chunk_id → superseded_by (if provided)
+
+        Parameters:
+        -----------
+        doc_id : str
+            Document identifier whose chunks should be deprecated
+        reason : str
+            Human-readable reason for deprecation
+        superseded_by : str, optional
+            doc_id of the replacement document
+
+        Returns:
+        --------
+        Dict[str, Any]:
+            Summary: { doc_id, chunks_deprecated, deprecated_date, reason }
+
+        Raises:
+        -------
+        ValueError:
+            If no chunks found for the given doc_id
+        NotImplementedError:
+            If vector store does not expose the required API
+        """
+        logger.info(f"Deprecating document: doc_id={doc_id}, reason={reason}")
+
+        deprecated_date = datetime.utcnow().isoformat()
+
+        updates = {
+            "deprecated_flag": True,
+            "deprecated_date": deprecated_date,
+            "deprecation_reason": reason,
+        }
+        if superseded_by:
+            updates["superseded_by_chunk_id"] = superseded_by
+
+        # Delegate to the VectorStoreInterface — no direct collection access
+        count = self.vectorstore.update_document_metadata(doc_id, updates)
+        if count == 0:
+            raise ValueError(f"No document found with doc_id='{doc_id}'")
+
+        logger.info(f"✅ Deprecated {count} chunks for doc_id={doc_id}")
+        return {
+            "doc_id": doc_id,
+            "chunks_deprecated": count,
+            "deprecated_date": deprecated_date,
+            "reason": reason,
+            "superseded_by": superseded_by,
+        }
+
     def delete_document(self, doc_id: str) -> None:
         """
         Delete all chunks for a document.
@@ -572,12 +671,15 @@ class DocumentPipeline:
         pipeline.delete_document("old_handbook_2023")
         """
         logger.info(f"Deleting document: {doc_id}")
-        self.vector_store.delete_by_doc_id(doc_id)
+        self.vectorstore.delete_by_doc_id(doc_id)
         logger.info(f"✅ Deleted all chunks for doc_id: {doc_id}")
+
+        # Refresh retrieval strategies so deleted chunks are excluded from BM25
+        self._refresh_retrieval_strategies()
 
     def get_document_info(self, doc_id: str) -> Dict[str, Any]:
         """
-        Get information about a document.
+        Get aggregated information about a document from the vector store.
 
         Parameters:
         -----------
@@ -587,31 +689,66 @@ class DocumentPipeline:
         Returns:
         --------
         Dict[str, Any]:
-            Document metadata and statistics
+            Document metadata and statistics, e.g.:
+            {
+              "doc_id": "handbook_2025",
+              "title": "Employee Handbook 2025",
+              "chunk_count": 42,
+              "upload_timestamp": "2025-11-01T10:30:00",
+              "version": "1.0",
+              "deprecated": false,
+              "embedding_model": "all-MiniLM-L6-v2",
+              "chunking_strategy": "recursive"
+            }
 
-        Note:
-        -----
-        Implementation depends on vector store capabilities.
-        May need to search and aggregate chunk metadata.
+        Raises:
+        -------
+        ValueError:
+            If document not found in vector store
         """
         logger.info(f"Fetching document info: {doc_id}")
-        # This would need vector store support or search + aggregate
-        raise NotImplementedError("get_document_info not yet implemented")
 
+        collection = getattr(self.vectorstore, "collection", None)
+        if collection is None:
+            raise NotImplementedError(
+                "Vector store has no 'collection' handle; cannot retrieve document info."
+            )
 
-    def list_documents(self, filters: dict | None = None) -> list[dict]:
-        # Implement via your vector store / metadata backend
-        raise NotImplementedError
+        results = collection.get(
+            where={"doc_id": doc_id},
+            include=["metadatas"],
+        )
 
-    def list_chunks(
-        self,
-        doc_id: str,
-        *,
-        limit: int | None = None,
-        offset: int = 0,
-    ) -> list[dict]:
-        # Implement via your vector store / metadata backend
-        raise NotImplementedError
+        metadatas = results.get("metadatas") or []
+        if not metadatas:
+            raise ValueError(f"No document found with doc_id='{doc_id}'")
+
+        # Aggregate from all chunks; use first chunk's fields for scalar metadata
+        first = metadatas[0] or {}
+
+        upload_timestamps = [
+            m.get("upload_timestamp") or m.get("processing_timestamp")
+            for m in metadatas
+            if m and (m.get("upload_timestamp") or m.get("processing_timestamp"))
+        ]
+        upload_timestamps.sort()
+
+        deprecated_flags = [m.get("deprecated_flag", False) for m in metadatas if m]
+
+        return {
+            "doc_id": doc_id,
+            "title": first.get("title"),
+            "chunk_count": len(metadatas),
+            "upload_timestamp": upload_timestamps[0] if upload_timestamps else None,
+            "version": first.get("version") or first.get("document_version"),
+            "deprecated": any(deprecated_flags),
+            "embedding_model": first.get("embedding_model_name"),
+            "chunking_strategy": first.get("chunking_strategy"),
+            "doc_type": first.get("doc_type"),
+            "domain": first.get("domain"),
+            "uploader_id": first.get("uploader_id"),
+            "source_file_hash": first.get("source_file_hash"),
+        }
 
 
     def list_documents(self, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
@@ -646,12 +783,12 @@ class DocumentPipeline:
         )
 
         # 1) If vector store has a native list_documents(), just use it
-        if hasattr(self.vector_store, "list_documents"):
-            logger.debug("Using vector_store.list_documents()")
-            return self.vector_store.list_documents(filters=filters)
+        if hasattr(self.vectorstore, "list_documents"):
+            logger.debug("Using vectorstore.list_documents()")
+            return self.vectorstore.list_documents(filters=filters)
 
         # 2) Generic fallback: scan all metadata from the underlying collection
-        collection = getattr(self.vector_store, "collection", None)
+        collection = getattr(self.vectorstore, "collection", None)
         if collection is None:
             raise NotImplementedError(
                 "Vector store does not support list_documents and has no 'collection' handle."
@@ -684,7 +821,7 @@ class DocumentPipeline:
                     "chunk_count": 0,
                     "first_seen": None,
                     "last_seen": None,
-                    "deprecated": md.get("deprecated", False),
+                    "deprecated_flag": md.get("deprecated_flag", False),
                 },
             )
 
@@ -763,14 +900,14 @@ class DocumentPipeline:
         )
 
         # 1) If vector store has a native list_chunks(), use that
-        if hasattr(self.vector_store, "list_chunks"):
-            logger.debug("Using vector_store.list_chunks()")
-            return self.vector_store.list_chunks(
+        if hasattr(self.vectorstore, "list_chunks"):
+            logger.debug("Using vectorstore.list_chunks()")
+            return self.vectorstore.list_chunks(
                 doc_id=doc_id, limit=limit, offset=offset
             )
 
         # 2) Generic fallback: query underlying collection by metadata
-        collection = getattr(self.vector_store, "collection", None)
+        collection = getattr(self.vectorstore, "collection", None)
         if collection is None:
             raise NotImplementedError(
                 "Vector store does not support list_chunks and has no 'collection' handle."

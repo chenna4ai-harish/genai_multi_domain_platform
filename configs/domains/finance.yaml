@@ -1,0 +1,64 @@
+# =============================================================================
+# configs/domains/finance.yaml
+#
+# Finance domain configuration.
+# Inherits global defaults from configs/global_config.yaml and overrides below.
+# =============================================================================
+
+domain_id: finance
+name: Finance
+description: "Financial policies, expense reports, budget guidelines, and audit docs"
+
+vectorstore:
+  provider: chromadb
+  collection_name: finance
+  persist_directory: ./data/chromadb/finance
+
+# Smaller chunks for precise financial data retrieval
+chunking:
+  strategy: recursive
+  recursive:
+    chunk_size: 400
+    overlap: 60
+
+embeddings:
+  provider: sentence_transformers
+  model_name: all-MiniLM-L6-v2
+  device: cpu
+  batch_size: 32
+
+# Slightly higher keyword weight for finance (exact terms matter)
+retrieval:
+  strategies:
+    - hybrid
+  top_k: 10
+  similarity: cosine
+  hybrid:
+    alpha: 0.6       # 60% semantic, 40% keyword
+    normalize_scores: true
+
+# LLM — lower temperature for precise financial answers
+llm:
+  provider: gemini
+  model_name: gemini-1.5-flash
+  temperature: 0.1
+  max_tokens: 512
+
+security:
+  allowed_file_types:
+    - pdf
+    - docx
+    - txt
+  max_file_size_mb: 20
+
+metadata:
+  track_versions: true
+  enable_deprecation: true
+  compute_file_hash: true
+  extract_page_numbers: true
+  required_fields:
+    - doc_id
+    - title
+    - domain
+    - doc_type
+    - uploader_id
